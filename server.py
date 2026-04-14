@@ -52,9 +52,11 @@ from memory import (
 from notes_access import get_recent_notes, read_note, search_notes_apple, create_apple_note
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
+import platform_adapter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
+platform_adapter.log_platform_info()
 
 # ---------------------------------------------------------------------------
 # Config
@@ -67,7 +69,7 @@ FISH_API_URL = "https://api.fish.audio/v1/tts"
 USER_NAME = os.getenv("USER_NAME", "sir")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DESKTOP_PATH = Path.home() / "Desktop"
+DESKTOP_PATH = platform_adapter.get_projects_path()
 
 JARVIS_SYSTEM_PROMPT = """\
 You are JARVIS — Just A Rather Very Intelligent System. You serve as {user_name}'s AI assistant, modeled precisely after Tony Stark's AI from the MCU films.
@@ -2574,7 +2576,8 @@ if __name__ == "__main__":
     # Auto-detect SSL certs
     cert_file = Path(__file__).parent / "cert.pem"
     key_file = Path(__file__).parent / "key.pem"
-    use_ssl = args.ssl or (cert_file.exists() and key_file.exists())
+    dev_mode = os.getenv("DEV_MODE", "").lower() in ("1", "true", "yes")
+    use_ssl = not dev_mode and (args.ssl or (cert_file.exists() and key_file.exists()))
 
     proto = "https" if use_ssl else "http"
     ws_proto = "wss" if use_ssl else "ws"

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import time as _time
+import platform_adapter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -46,6 +47,8 @@ end tell
 
 async def _ensure_calendar_running():
     """Launch Calendar.app if not already running."""
+    if not platform_adapter.is_macos():
+        return
     global _calendar_launched
     if _calendar_launched:
         return
@@ -65,6 +68,8 @@ async def _ensure_calendar_running():
 
 async def _fetch_calendar_events(cal_name: str, timeout: float = 12.0) -> list[dict]:
     """Fetch all events from one calendar, filter to today in Python."""
+    if not platform_adapter.is_macos():
+        return []
     script = _BULK_SCRIPT.replace("{cal_name}", cal_name)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -208,6 +213,8 @@ async def get_next_event() -> dict | None:
 
 async def get_calendar_names() -> list[str]:
     """Get list of all calendar names."""
+    if not platform_adapter.is_macos():
+        return []
     await _ensure_calendar_running()
     try:
         proc = await asyncio.create_subprocess_exec(

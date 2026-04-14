@@ -12,10 +12,11 @@ import re
 import time
 from pathlib import Path
 from urllib.parse import quote
+import platform_adapter
 
 log = logging.getLogger("jarvis.actions")
 
-DESKTOP_PATH = Path.home() / "Desktop"
+DESKTOP_PATH = platform_adapter.get_projects_path()
 
 
 async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
@@ -23,6 +24,8 @@ async def _mark_terminal_as_jarvis(revert_after: float = 5.0):
 
     Shows the user JARVIS is active in that terminal. Reverts after revert_after seconds.
     """
+    if not platform_adapter.is_macos():
+        return
     # Save the current profile, switch to Ocean, then revert
     script_save = (
         'tell application "Terminal"\n'
@@ -82,6 +85,8 @@ async def _revert_terminal_theme(profile_name: str):
 
 async def open_terminal(command: str = "") -> dict:
     """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
+    if not platform_adapter.is_macos():
+        return {"success": False, "confirmation": "Terminal control not yet available on this platform, sir."}
     if command:
         escaped = command.replace('"', '\\"')
         script = (
@@ -115,6 +120,8 @@ async def open_terminal(command: str = "") -> dict:
 
 async def open_browser(url: str, browser: str = "chrome") -> dict:
     """Open URL in user's browser (Chrome or Firefox)."""
+    if not platform_adapter.is_macos():
+        return {"success": False, "confirmation": "Browser control not yet available on this platform, sir."}
     escaped_url = url.replace('"', '\\"')
 
     if browser.lower() == "firefox":
@@ -277,6 +284,8 @@ return "OK"
 
 async def get_chrome_tab_info() -> dict:
     """Read the current Chrome tab's title and URL via AppleScript."""
+    if not platform_adapter.is_macos():
+        return {}
     script = (
         'tell application "Google Chrome"\n'
         "    set tabTitle to title of active tab of front window\n"
