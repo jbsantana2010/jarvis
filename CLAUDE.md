@@ -1,53 +1,150 @@
-# JARVIS — Voice AI Assistant
+# JARVIS — Project Context for Claude
 
-## Overview
-JARVIS (Just A Rather Very Intelligent System) is a voice-first AI assistant for macOS. It runs locally on your machine, connecting to your Apple Calendar, Mail, Notes, and can spawn Claude Code sessions for development tasks.
+This file gives Claude full project context when starting a new session,
+especially useful when switching between machines (home ↔ work laptop).
 
-## Quick Start
-When a user clones this repo and starts Claude Code, help them:
-1. Copy .env.example to .env
-2. Get an Anthropic API key from console.anthropic.com
-3. Get a Fish Audio API key from fish.audio
-4. Install Python dependencies: pip install -r requirements.txt
-5. Install frontend dependencies: cd frontend && npm install
-6. Generate SSL certs: openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj '/CN=localhost'
-7. Run the backend: python server.py
-8. Run the frontend: cd frontend && npm run dev
-9. Open Chrome to http://localhost:5173
-10. Click to enable audio, speak to JARVIS
+---
+
+## What this project is
+
+A voice-activated AI assistant running on WSL/Windows. The user speaks → browser
+captures audio via Web Speech API → WebSocket → FastAPI backend → Anthropic Claude
+for reasoning → Fish Audio for TTS → MP3 streamed back to browser. Falls back to
+browser-native `window.speechSynthesis` if Fish Audio fails.
+
+---
 
 ## Architecture
-- **Backend**: FastAPI + Python (server.py, ~2300 lines)
-- **Frontend**: Vite + TypeScript + Three.js (audio-reactive orb)
-- **Communication**: WebSocket (JSON messages + binary audio)
-- **AI**: Claude Haiku for fast responses, Claude Opus for research
-- **TTS**: Fish Audio with JARVIS voice model
-- **System**: AppleScript for Calendar, Mail, Notes, Terminal integration
 
-## Key Files
-- `server.py` — Main server, WebSocket handler, LLM integration, action system
-- `frontend/src/orb.ts` — Three.js particle orb visualization
-- `frontend/src/voice.ts` — Web Speech API + audio playback
-- `frontend/src/main.ts` — Frontend state machine
-- `memory.py` — SQLite memory system with FTS5 search
-- `calendar_access.py` — Apple Calendar integration via AppleScript
-- `mail_access.py` — Apple Mail integration (READ-ONLY)
-- `notes_access.py` — Apple Notes integration
-- `actions.py` — System actions (Terminal, Chrome, Claude Code)
-- `browser.py` — Playwright web automation
-- `work_mode.py` — Persistent Claude Code sessions
+```
+Browser (Vite + TypeScript)
+  │  Web Speech API (STT)
+  │  AudioContext (MP3 playback)
+  │  window.speechSynthesis (TTS fallback)
+  └─ WebSocket ──► FastAPI server (server.py)
+                        │
+                        ├─ Anthropic API (claude-haiku for classification,
+                        │                 claude-sonnet for responses)
+                        ├─ Fish Audio API (TTS → MP3 bytes → base64)
+                        ├─ platform_adapter.py  (WSL/Windows OS ops)
+                        ├─ actions.py           (high-level action helpers)
+                        └─ conversation_db.py   (SQLite persistence)
+```
 
-## Environment Variables
-- `ANTHROPIC_API_KEY` (required) — Claude API access
-- `FISH_API_KEY` (required) — Fish Audio TTS
-- `FISH_VOICE_ID` (optional) — Voice model ID
-- `USER_NAME` (optional) — Your name for JARVIS to use
-- `CALENDAR_ACCOUNTS` (optional) — Comma-separated calendar emails
+---
 
-## Conventions
-- JARVIS personality: British butler, dry wit, economy of language
-- Max 1-2 sentences per voice response
-- Action tags: [ACTION:BUILD], [ACTION:BROWSE], [ACTION:RESEARCH], etc.
-- AppleScript for all macOS integrations (no OAuth needed)
-- Read-only for Mail (safety by design)
-- SQLite for all local data storage
+## Key files
+
+| File | Purpose |
+|------|---------|
+| `server.py` | Main FastAPI app, WebSocket handler, all action executors, system prompt |
+| `platform_adapter.py` | All WSL/Windows OS calls (launch apps, open URLs, screenshot, clipboard) |
+| `actions.py` | Higher-level helpers (open_app, open_browser, open_terminal) |
+| `conversation_db.py` | SQLite conversation persistence (~/.jarvis/conversations.db) |
+| `screen.py` | Screenshot routing (WSL → platform_adapter, macOS → native) |
+| `frontend/src/main.ts` | WebSocket client, state machine, audio playback, browser TTS fallback |
+| `frontend/src/voice.ts` | AudioContext queue player |
+| `frontend/src/settings.ts` | Settings panel (preferences API) |
+
+---
+
+## Action tag system
+
+The LLM embeds `[ACTION:TAG]` or `[ACTION:TAG:param]` tags in its response.
+`server.py` strips them from spoken text and dispatches them as side effects.
+
+Current actions: `OPEN_APP`, `BROWSE`, `SCREENSHOT`, `WEATHER`, `CALENDAR`,
+`MAIL`, `READ_CLIPBOARD`, `WRITE_CLIPBOARD`, `WORK_MODE_START`, `WORK_MODE_STOP`
+
+Fast-path: `detect_action_fast()` catches obvious commands via keyword match
+before hitting the LLM (saves latency for things like "open calculator").
+
+---
+
+## Platform adapter — WSL specifics
+
+- App launches: PowerShell `Start-Process` (primary), cmd `/c start` (fallback)
+- URL opening: same `Start-Process` chain (avoids explorer.exe `?` wildcard bug)
+- Screenshots: PowerShell `System.Drawing` → `$env:USERPROFILE\Pictures\Jarvis\`
+- Clipboard read: `powershell.exe Get-Clipboard`
+- Clipboard write: pipe to `clip.exe` stdin
+- `_WIN_APP_REGISTRY`: maps friendly names → exe/URI (e.g. `discord` → `discord:`)
+
+---
+
+## Conversation persistence
+
+`conversation_db.py` stores every turn in `~/.jarvis/conversations.db` (SQLite).
+On WebSocket connect, the last 20 messages are loaded into `history[]` so the
+assistant remembers context across server restarts. DB is pruned to 200 rows max.
+
+---
+
+## Work mode
+
+"Start work mode" launches a `claude -p` subprocess (`WorkSession`). Subsequent
+speech is routed there as a coding assistant. Stop phrases like "stop work mode",
+"end work session", etc. return to normal voice mode.
+
+---
+
+## Frontend state machine
+
+`idle → listening → thinking → speaking → idle`
+
+- `status:idle` from server is **ignored** while in `speaking` state (prevents
+  race where server finishes before audio playback completes).
+- `speakingWatchdog`: 30s timeout forces idle if stuck in speaking state.
+- `{type:"text"}` triggers browser TTS fallback (Fish Audio failure path).
+- `{type:"audio"}` with valid base64 MP3 cancels browser TTS and plays Fish Audio.
+
+---
+
+## Environment variables (.env)
+
+```
+ANTHROPIC_API_KEY=
+FISH_API_KEY=
+FISH_VOICE_ID=612b878b113047d9a770c069c8b4fdfe
+USER_LOCATION=San Juan, Puerto Rico
+DEV_MODE=1   # disables some guards during development
+```
+
+---
+
+## Dev scripts
+
+| Script | Purpose |
+|--------|---------|
+| `verify_jarvis.sh` | Full smoke test — run after a pull or before pushing |
+| `typecheck_frontend.sh` | TypeScript type-check only |
+| `setup_dev_env.sh` | First-time setup on a new machine (npm install + import check) |
+
+---
+
+## Sprint history (brief)
+
+- **Sprint 1–2**: Core voice pipeline, Fish Audio TTS, basic action system
+- **Sprint 3**: Windows app registry, WSL launch via PowerShell, weather, open_app
+- **Sprint 4**: Screenshot (WSL), URI protocol launches (discord/spotify/calculator),
+  work mode stop phrases, honest browser/calendar/mail stubs
+- **Sprint 5**: Fixed browser search (explorer.exe `?` bug), frontend stuck-state fix,
+  configurable screenshot path, normalize "open a tab and search" phrases
+- **Sprint 6**: Browser TTS fallback (never silent), clipboard read/write,
+  conversation persistence across restarts (SQLite)
+
+---
+
+## Common issues & fixes
+
+**Search opens File Explorer**: `explorer.exe` treats `?` as a wildcard. Fixed by
+using PowerShell `Start-Process` for all URL opening.
+
+**Frontend stuck in speaking**: Server sends `status:idle` before audio finishes
+playing. Fixed by ignoring server idle signals while `currentState === "speaking"`.
+
+**TTS fallback stuck 30s**: `{type:"text"}` wasn't triggering audio, so state
+never left speaking. Fixed by wiring text messages to `speakWithBrowserTts()`.
+
+**Multi-line git commits in PowerShell**: heredoc syntax (`<<'EOF'`) is rejected.
+Workaround: write commit message to `/tmp/` file, use `git commit -F`.
