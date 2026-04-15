@@ -54,6 +54,7 @@ from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 import platform_adapter
 import conversation_db
+import mail_gmail
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -121,9 +122,11 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN help plan {user_name}'s day — combine tasks and priorities into an organized plan
 - You CAN remember facts about {user_name} — preferences, decisions, goals. Use [ACTION:REMEMBER] to store important info.
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
+- You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
 
 NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
-- Apple Calendar, Apple Mail, Apple Notes — not available, do NOT pretend to read them
+- Apple Calendar, Apple Notes — not available, do NOT pretend to read them
+- Apple Mail / Outlook — not available; use [ACTION:READ_MAIL] or [ACTION:SUMMARIZE_MAIL] for Gmail instead
 - Screen capture / window list — not available on WSL
 - If asked about these, say: "That feature isn't wired up on Windows yet, sir."
 
@@ -212,6 +215,8 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:WEATHER] [location] — fetch and speak current weather. Leave location blank to use saved default.
 - [ACTION:READ_CLIPBOARD] — read and speak the user's clipboard contents. Use when user says "what's in my clipboard", "read clipboard", "what did I copy", "summarize my clipboard", etc.
 - [ACTION:WRITE_CLIPBOARD] text — write the given text to the clipboard. Use when user says "copy X to clipboard", "put that in my clipboard", "write this to clipboard: ...", etc. Put the exact text to copy as the action target.
+- [ACTION:READ_MAIL] — fetch and speak recent Gmail messages (sender, subject, unread status). Use when user says "check my email", "what emails do I have", "any new mail", "read my email", "latest emails", "what's in my inbox", etc.
+- [ACTION:SUMMARIZE_MAIL] — use AI to summarize Gmail inbox and highlight what matters. Use when user says "summarize my inbox", "any important emails", "what should I know about my email", "inbox summary", "any urgent emails", etc.
   "what's the weather?" → [ACTION:WEATHER]
   "weather in Miami" → [ACTION:WEATHER] Miami
   "what's it like in Tokyo?" → [ACTION:WEATHER] Tokyo
@@ -769,7 +774,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1109,6 +1114,95 @@ async def _execute_write_clipboard(text_to_copy: str, ws=None, history=None):
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception as e:
             log.warning(f"_execute_write_clipboard ws send failed: {e}")
+
+
+async def _execute_read_mail(ws=None, history=None):
+    """Fetch recent Gmail and speak a brief spoken list."""
+    if not mail_gmail.is_configured():
+        msg = (
+            "Gmail isn't configured yet, sir. "
+            "Download credentials.json from Google Cloud Console, "
+            "place it in the project folder, and I'll handle authentication on first use."
+        )
+    else:
+        try:
+            emails = await mail_gmail.fetch_recent_emails(max_results=8)
+            msg = mail_gmail.format_for_voice(emails)
+            _ctx_cache["mail"] = msg
+        except asyncio.TimeoutError:
+            msg = "Gmail request timed out, sir. Check your connection."
+        except Exception as e:
+            log.warning("_execute_read_mail failed: %s", e)
+            msg = f"Couldn't reach Gmail, sir — {mail_gmail.friendly_error(e)}."
+
+    log.info("read_mail result: %s", msg[:80])
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[Gmail read]: {msg}"})
+    if ws:
+        try:
+            audio = await synthesize_speech(strip_markdown_for_tts(msg))
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning("_execute_read_mail ws send failed: %s", e)
+
+
+async def _execute_summarize_mail(ws=None, history=None):
+    """Fetch Gmail and use Claude Haiku to produce a spoken inbox summary."""
+    if not mail_gmail.is_configured():
+        msg = (
+            "Gmail isn't configured yet, sir. "
+            "Place credentials.json in the project folder to get started."
+        )
+    else:
+        try:
+            emails = await mail_gmail.fetch_recent_emails(max_results=15)
+            if not emails:
+                msg = "Your inbox is empty, sir. Nothing to summarize."
+            elif not anthropic_client:
+                msg = mail_gmail.format_for_voice(emails)
+            else:
+                prompt_text = mail_gmail.format_for_llm(emails)
+                try:
+                    resp = await anthropic_client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=200,
+                        system=(
+                            "You are JARVIS. Summarize this Gmail inbox in 2–3 spoken sentences. "
+                            "Focus on urgent items, patterns, and anything requiring attention. "
+                            "Natural voice only — no markdown, no lists. Address the user as 'sir'."
+                        ),
+                        messages=[{"role": "user", "content": prompt_text}],
+                    )
+                    msg = resp.content[0].text.strip()
+                except Exception as haiku_err:
+                    log.warning("Haiku summarization failed, falling back to voice format: %s", haiku_err)
+                    msg = mail_gmail.format_for_voice(emails)
+            _ctx_cache["mail"] = msg
+        except asyncio.TimeoutError:
+            msg = "Gmail request timed out, sir."
+        except Exception as e:
+            log.warning("_execute_summarize_mail failed: %s", e)
+            msg = f"Couldn't reach Gmail, sir — {mail_gmail.friendly_error(e)}."
+
+    log.info("summarize_mail result: %s", msg[:80])
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[Gmail summary]: {msg}"})
+    if ws:
+        try:
+            audio = await synthesize_speech(strip_markdown_for_tts(msg))
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning("_execute_summarize_mail ws send failed: %s", e)
 
 
 def _find_project_dir(project_name: str) -> str | None:
@@ -1800,11 +1894,22 @@ def detect_action_fast(text: str) -> dict | None:
                              "next meeting", "what's my next meeting"]):
         return {"action": "check_calendar"}
 
-    # Mail — explicit email requests
+    # Mail — summarize inbox (check before check_mail to catch "summarize" first)
+    if any(p in t for p in ["summarize my inbox", "summarise my inbox",
+                             "inbox summary", "summarize my email", "summarise my email",
+                             "any important emails", "any urgent emails",
+                             "what's important in my email", "whats important in my email",
+                             "important emails", "what should i know about my email",
+                             "give me an email summary", "email summary"]):
+        return {"action": "summarize_mail"}
+
+    # Mail — read recent emails
     if any(p in t for p in ["check my email", "check my mail", "any new emails", "any new mail",
                              "unread emails", "unread mail", "what's in my inbox",
                              "whats in my inbox", "read my email", "read my mail",
-                             "any emails", "any mail", "email update", "mail update"]):
+                             "any emails", "any mail", "email update", "mail update",
+                             "latest emails", "recent emails", "what emails do i have",
+                             "do i have any emails", "new emails", "check inbox"]):
         return {"action": "check_mail"}
 
     # Dispatch / build status check
@@ -1974,28 +2079,24 @@ async def _do_calendar_lookup() -> str:
 
 
 async def _do_mail_lookup() -> str:
-    """Slow mail fetch — runs in thread."""
-    if platform_adapter.PLATFORM in ("wsl", "windows"):
+    """Fetch Gmail inbox — used by _lookup_and_report to update cache and speak result."""
+    if not mail_gmail.is_configured():
         return (
-            "Mail integration isn't connected on Windows yet, sir. "
-            "I can help you draft or compose messages if you'd like."
+            "Gmail isn't configured yet, sir. "
+            "Place credentials.json in the project folder and I can authenticate on first use."
         )
-    unread_info = await get_unread_count()
-    if isinstance(unread_info, dict):
-        _ctx_cache["mail"] = format_unread_summary(unread_info)
-        if unread_info["total"] == 0:
-            return "Inbox is clear, sir. No unread messages."
-        unread_msgs = await get_unread_messages(count=5)
-        summary = format_unread_summary(unread_info)
-        if unread_msgs:
-            top = unread_msgs[:3]
-            details = ". ".join(
-                f"{_short_sender(m['sender'])} regarding {m['subject']}"
-                for m in top
-            )
-            return f"{summary} Most recent: {details}."
-        return summary
-    return "Couldn't reach Mail at the moment, sir."
+    try:
+        emails = await mail_gmail.fetch_recent_emails(max_results=8)
+        result = mail_gmail.format_for_voice(emails)
+        _ctx_cache["mail"] = result
+        return result
+    except FileNotFoundError as e:
+        return f"Gmail credentials not found, sir — {mail_gmail.friendly_error(e)}."
+    except asyncio.TimeoutError:
+        return "Gmail request timed out, sir. Check your connection."
+    except Exception as e:
+        log.warning("_do_mail_lookup failed: %s", e)
+        return f"Couldn't reach Gmail, sir — {mail_gmail.friendly_error(e)}."
 
 
 async def _do_screen_lookup() -> str:
@@ -2382,7 +2483,8 @@ async def voice_handler(ws: WebSocket):
                     # Fast actions bypass claude -p even while work mode is active
                     elif _work_fast and _work_fast["action"] in (
                             "take_screenshot", "open_app", "open_terminal", "describe_screen",
-                            "browse", "read_clipboard", "write_clipboard"):
+                            "browse", "read_clipboard", "write_clipboard",
+                            "check_mail", "summarize_mail"):
                         if _work_fast["action"] == "take_screenshot":
                             response_text = "Taking a screenshot now, sir."
                             asyncio.create_task(_take_and_report_screenshot(ws, history=history, voice_state=voice_state))
@@ -2404,6 +2506,12 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "write_clipboard":
                             response_text = "Copying that, sir."
                             asyncio.create_task(_execute_write_clipboard(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "check_mail":
+                            response_text = "Checking your inbox, sir."
+                            asyncio.create_task(_execute_read_mail(ws, history=history))
+                        elif _work_fast["action"] == "summarize_mail":
+                            response_text = "Summarizing your inbox, sir."
+                            asyncio.create_task(_execute_summarize_mail(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -2482,7 +2590,10 @@ async def voice_handler(ws: WebSocket):
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
                         elif action["action"] == "check_mail":
                             response_text = "Checking your inbox now, sir."
-                            asyncio.create_task(_lookup_and_report("mail", _do_mail_lookup, ws, history=history, voice_state=voice_state))
+                            asyncio.create_task(_execute_read_mail(ws, history=history))
+                        elif action["action"] == "summarize_mail":
+                            response_text = "Pulling up your inbox summary, sir."
+                            asyncio.create_task(_execute_summarize_mail(ws, history=history))
                         elif action["action"] == "check_dispatch":
                             recent = dispatch_registry.get_most_recent()
                             if not recent:
@@ -2674,6 +2785,10 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_read_clipboard(ws, history=history))
                                 elif embedded_action["action"] == "write_clipboard":
                                     asyncio.create_task(_execute_write_clipboard(embedded_action["target"], ws, history=history))
+                                elif embedded_action["action"] == "read_mail":
+                                    asyncio.create_task(_execute_read_mail(ws, history=history))
+                                elif embedded_action["action"] == "summarize_mail":
+                                    asyncio.create_task(_execute_summarize_mail(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
