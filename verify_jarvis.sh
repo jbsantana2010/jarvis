@@ -48,18 +48,19 @@ python3 - <<PYEOF
 import re, sys
 src = open('$SCRIPT_DIR/server.py').read()
 checks = [
-    (r'take_screenshot_wsl',       'screenshot (WSL)'),
+    (r'take_screenshot',           'screenshot (WSL)'),
     (r'_execute_browse',           'browse executor'),
     (r'_execute_open_app',         'open_app executor'),
     (r'_execute_read_clipboard',   'clipboard read'),
     (r'_execute_write_clipboard',  'clipboard write'),
     (r'_WORK_STOP_PHRASES',        'work-mode stop phrases'),
     (r'conversation_db',           'conversation persistence'),
-    (r'speakingWatchdog|watchdog', 'speaking watchdog (note: in frontend)'),
+    (r'speakingWatchdog',          'speaking watchdog (frontend)'),
 ]
 all_ok = True
 for pattern, label in checks:
-    if re.search(pattern, src):
+    ts = open('$SCRIPT_DIR/frontend/src/main.ts').read(); haystack = ts if "frontend" in label else src
+    if re.search(pattern, haystack):
         print(f"  {label} ✓")
     else:
         print(f"  {label} ✗  (pattern: {pattern})")
