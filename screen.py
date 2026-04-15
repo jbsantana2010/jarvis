@@ -119,8 +119,14 @@ async def take_screenshot(display_only: bool = True) -> str | None:
     Returns:
         Base64-encoded PNG string, or None on failure.
     """
+    # WSL / Windows — delegate to PowerShell capture
+    if platform_adapter.PLATFORM in ("wsl", "windows"):
+        return await platform_adapter.take_screenshot_wsl()
+
     if not platform_adapter.is_macos():
+        log.info("take_screenshot: unsupported platform, returning None")
         return None
+
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
 

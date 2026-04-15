@@ -30,6 +30,8 @@ interface PreferencesResponse {
   user_name: string;
   honorific: string;
   calendar_accounts: string;
+  location: string;
+  screenshot_path: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +146,22 @@ function buildPanelHTML(): string {
           </div>
 
           <div class="settings-field">
+            <label>Default Location</label>
+            <div class="settings-input-row">
+              <input type="text" id="input-location" placeholder="e.g. San Juan, PR" />
+            </div>
+            <div class="settings-hint">Used for weather and time-aware features.</div>
+          </div>
+
+          <div class="settings-field">
+            <label>Screenshot Save Path</label>
+            <div class="settings-input-row">
+              <input type="text" id="input-screenshot-path" placeholder="Leave blank for Pictures\\Jarvis (default)" />
+            </div>
+            <div class="settings-hint">Windows path, e.g. C:\\Users\\you\\Pictures\\Jarvis\\screenshot.png. Leave blank for default.</div>
+          </div>
+
+          <div class="settings-field">
             <label>Calendar Accounts</label>
             <textarea id="input-calendar-accounts" rows="2" placeholder="auto (or comma-separated emails)"></textarea>
           </div>
@@ -242,9 +260,13 @@ async function loadPreferences() {
     const nameEl = document.getElementById("input-user-name") as HTMLInputElement;
     const honEl = document.getElementById("input-honorific") as HTMLSelectElement;
     const calEl = document.getElementById("input-calendar-accounts") as HTMLTextAreaElement;
+    const locEl = document.getElementById("input-location") as HTMLInputElement;
+    const ssEl = document.getElementById("input-screenshot-path") as HTMLInputElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
     if (calEl) calEl.value = prefs.calendar_accounts || "auto";
+    if (locEl) locEl.value = prefs.location || "";
+    if (ssEl) ssEl.value = prefs.screenshot_path || "";
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
@@ -306,7 +328,9 @@ function wireEvents() {
     const user_name = (document.getElementById("input-user-name") as HTMLInputElement).value.trim();
     const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
     const calendar_accounts = (document.getElementById("input-calendar-accounts") as HTMLTextAreaElement).value.trim();
-    await apiPost("/api/settings/preferences", { user_name, honorific, calendar_accounts });
+    const location = (document.getElementById("input-location") as HTMLInputElement)?.value.trim() ?? "";
+    const screenshot_path = (document.getElementById("input-screenshot-path") as HTMLInputElement)?.value.trim() ?? "";
+    await apiPost("/api/settings/preferences", { user_name, honorific, calendar_accounts, location, screenshot_path });
     await loadStatus();
   });
 

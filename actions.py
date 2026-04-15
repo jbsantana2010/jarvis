@@ -84,9 +84,18 @@ async def _revert_terminal_theme(profile_name: str):
 
 
 async def open_terminal(command: str = "") -> dict:
-    """Open Terminal.app and optionally run a command. Marks it blue for JARVIS."""
+    """Open a terminal window and optionally run a command.
+
+    macOS  : Terminal.app via AppleScript (original behaviour).
+    WSL    : Windows Terminal (wt.exe) → cmd.exe fallback via platform_adapter.
+    Linux  : gnome-terminal → xterm fallback via platform_adapter.
+    """
     if not platform_adapter.is_macos():
-        return {"success": False, "confirmation": "Terminal control not yet available on this platform, sir."}
+        success = await platform_adapter.open_terminal(command)
+        return {
+            "success": success,
+            "confirmation": "Terminal is open, sir." if success else "I had trouble opening a terminal, sir.",
+        }
     if command:
         escaped = command.replace('"', '\\"')
         script = (
@@ -119,9 +128,18 @@ async def open_terminal(command: str = "") -> dict:
 
 
 async def open_browser(url: str, browser: str = "chrome") -> dict:
-    """Open URL in user's browser (Chrome or Firefox)."""
+    """Open URL in user's browser.
+
+    macOS  : Google Chrome or Firefox via AppleScript (original behaviour).
+    WSL    : Default Windows browser via explorer.exe → cmd.exe fallback.
+    Linux  : Default browser via xdg-open.
+    """
     if not platform_adapter.is_macos():
-        return {"success": False, "confirmation": "Browser control not yet available on this platform, sir."}
+        success = await platform_adapter.open_url(url)
+        return {
+            "success": success,
+            "confirmation": "Pulled that up in your browser, sir." if success else "Had trouble opening the browser, sir.",
+        }
     escaped_url = url.replace('"', '\\"')
 
     if browser.lower() == "firefox":
@@ -159,6 +177,16 @@ async def open_browser(url: str, browser: str = "chrome") -> dict:
 # Keep backward compat
 async def open_chrome(url: str) -> dict:
     return await open_browser(url, "chrome")
+
+
+async def open_app(app_name: str) -> dict:
+    """Open a Windows application by name.
+
+    Routes through platform_adapter's centralized registry.
+    Returns {"success": bool, "confirmation": str}.
+    """
+    success, message = await platform_adapter.open_windows_app(app_name)
+    return {"success": success, "confirmation": message}
 
 
 async def open_claude_in_project(project_dir: str, prompt: str) -> dict:

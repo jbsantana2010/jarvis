@@ -417,3 +417,56 @@ html, body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── Activation overlay ─────────────────────────────────────────────────── */
+#activation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  cursor: pointer;
+  transition: opacity 0.6s ease;
+}
+
+#activation-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#activation-content {
+  text-align: center;
+  user-select: none;
+}
+
+#activation-title {
+  font-family: "Courier New", monospace;
+  font-size: 32px;
+  letter-spacing: 0.3em;
+  color: rgba(0, 212, 255, 0.9);
+  text-shadow: 0 0 30px rgba(0, 212, 255, 0.6);
+  margin-bottom: 16px;
+}
+
+#activation-sub {
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.35);
+  animation: pulse-text 2s ease-in-out infinite;
+}
+
+@keyframes pulse-text {
+  0%, 100% { opacity: 0.35; }
+  50%       { opacity: 0.7; }
+}
+
+/* ── Settings hint text ─────────────────────────────────────────────────── */
+.settings-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  margin-top: 4px;
+  padding-left: 2px;
+}

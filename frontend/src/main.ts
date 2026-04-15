@@ -19,6 +19,11 @@ type State = "idle" | "listening" | "thinking" | "speaking";
 let currentState: State = "idle";
 let isMuted = false;
 
+// Safety watchdog: if we get stuck in "speaking" with no audio finishing,
+// force-return to idle after this many ms (covers decode errors, dropped WS msgs, etc.)
+let speakingWatchdog: ReturnType<typeof setTimeout> | null = null;
+const SPEAKING_WATCHDOG_MS = 30_000;
+
 const statusEl = document.getElementById("status-text")!;
 const errorEl = document.getElementById("error-text")!;
 
@@ -56,6 +61,13 @@ orb.setAnalyser(audioPlayer.getAnalyser());
 
 function transition(newState: State) {
   if (newState === currentState) return;
+
+  // Clear watchdog whenever we leave speaking
+  if (speakingWatchdog !== null && newState !== "speaking") {
+    clearTimeout(speakingWatchdog);
+    speakingWatchdog = null;
+  }
+
   currentState = newState;
   orb.setState(newState as OrbState);
   updateStatus(newState);
@@ -72,6 +84,12 @@ function transition(newState: State) {
       break;
     case "speaking":
       voiceInput.pause();
+      // Start watchdog: force idle if audio never finishes (decode fail, lost WS msg, etc.)
+      speakingWatchdog = setTimeout(() => {
+        console.warn("[state] speaking watchdog fired — forcing idle");
+        speakingWatchdog = null;
+        transition("idle");
+      }, SPEAKING_WATCHDOG_MS);
       break;
   }
 }
@@ -102,6 +120,50 @@ audioPlayer.onFinished(() => {
 });
 
 // ---------------------------------------------------------------------------
+// Browser-native TTS fallback  (used when Fish Audio fails / key missing)
+// ---------------------------------------------------------------------------
+
+let _browserTtsUtterance: SpeechSynthesisUtterance | null = null;
+
+function speakWithBrowserTts(text: string): void {
+  if (!window.speechSynthesis) {
+    console.warn("[tts-fallback] speechSynthesis not available — going idle");
+    transition("idle");
+    return;
+  }
+
+  // Cancel any existing utterance before starting a new one
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 0.92;   // slightly slower than default — more natural for JARVIS
+  utterance.pitch = 0.95;
+  utterance.volume = 1.0;
+
+  utterance.onend = () => {
+    _browserTtsUtterance = null;
+    transition("idle");
+  };
+  utterance.onerror = (e) => {
+    console.warn("[tts-fallback] utterance error:", e.error);
+    _browserTtsUtterance = null;
+    transition("idle");
+  };
+
+  _browserTtsUtterance = utterance;
+  transition("speaking");
+  window.speechSynthesis.speak(utterance);
+  console.log("[tts-fallback] speaking via browser TTS:", text.slice(0, 60));
+}
+
+function cancelBrowserTts(): void {
+  if (_browserTtsUtterance) {
+    window.speechSynthesis.cancel();
+    _browserTtsUtterance = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket messages
 // ---------------------------------------------------------------------------
 
@@ -112,17 +174,27 @@ socket.onMessage((msg) => {
     const audioData = msg.data as string;
     console.log("[audio] received", audioData ? `${audioData.length} chars` : "EMPTY", "state:", currentState);
     if (audioData) {
+      // Real Fish Audio arriving — cancel any browser TTS fallback in progress
+      cancelBrowserTts();
       if (currentState !== "speaking") {
         transition("speaking");
       }
       audioPlayer.enqueue(audioData);
     } else {
-      // TTS failed — no audio but still need to return to idle
-      console.warn("[audio] no data received, returning to idle");
+      // Server sent empty audio data — return to idle (browser TTS handled via "text" msg)
+      console.warn("[audio] empty data received, returning to idle");
       transition("idle");
     }
-    // Log text for debugging
     if (msg.text) console.log("[JARVIS]", msg.text);
+  } else if (type === "text") {
+    // Server sends {type:"text"} when Fish Audio fails — speak via browser TTS fallback
+    const text = msg.text as string;
+    console.log("[JARVIS text-fallback]", text);
+    if (text) {
+      speakWithBrowserTts(text);
+    } else {
+      transition("idle");
+    }
   } else if (type === "status") {
     const state = msg.state as string;
     if (state === "thinking" && currentState !== "thinking") {
@@ -131,12 +203,17 @@ socket.onMessage((msg) => {
       // Task spawned — show thinking with a different label
       transition("thinking");
       statusEl.textContent = "working...";
+    } else if (state === "speaking" && currentState !== "speaking") {
+      // Server signalling it's about to send audio — pre-transition so mic pauses promptly
+      transition("speaking");
     } else if (state === "idle") {
-      transition("idle");
+      // Only honor server-idle when we are NOT actively playing audio.
+      // If we're in "speaking", the audioPlayer.onFinished callback drives the
+      // idle transition — honoring this early would resume the mic mid-playback.
+      if (currentState !== "speaking") {
+        transition("idle");
+      }
     }
-  } else if (type === "text") {
-    // Text fallback when TTS fails
-    console.log("[JARVIS]", msg.text);
   } else if (type === "task_spawned") {
     console.log("[task]", "spawned:", msg.task_id, msg.prompt);
   } else if (type === "task_complete") {
@@ -145,28 +222,31 @@ socket.onMessage((msg) => {
 });
 
 // ---------------------------------------------------------------------------
-// Kick off
+// Activation gate — must click before Chrome allows AudioContext + mic
 // ---------------------------------------------------------------------------
 
-// Start listening after a brief delay for the orb to render
-setTimeout(() => {
+const overlay = document.getElementById("activation-overlay")!;
+
+async function activate() {
+  // 1. Resume AudioContext — MUST happen inside a user-gesture handler
+  const ctx = audioPlayer.getAnalyser().context as AudioContext;
+  try {
+    await ctx.resume();
+    console.log("[audio] context state after resume:", ctx.state);
+  } catch (e) {
+    console.warn("[audio] context resume failed:", e);
+  }
+
+  // 2. Fade out and remove overlay
+  overlay.classList.add("hidden");
+  setTimeout(() => overlay.remove(), 650);
+
+  // 3. Now it's safe to start the mic
   voiceInput.start();
   transition("listening");
-}, 1000);
-
-// Resume AudioContext on ANY user interaction (browser autoplay policy)
-function ensureAudioContext() {
-  const ctx = audioPlayer.getAnalyser().context as AudioContext;
-  if (ctx.state === "suspended") {
-    ctx.resume().then(() => console.log("[audio] context resumed"));
-  }
 }
-document.addEventListener("click", ensureAudioContext);
-document.addEventListener("touchstart", ensureAudioContext);
-document.addEventListener("keydown", ensureAudioContext, { once: true });
 
-// Try to resume audio context on load
-ensureAudioContext();
+overlay.addEventListener("click", activate, { once: true });
 
 // ---------------------------------------------------------------------------
 // UI Controls

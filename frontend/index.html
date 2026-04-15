@@ -7,6 +7,14 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <!-- Activation gate — Chrome blocks AudioContext until user gesture -->
+    <div id="activation-overlay">
+      <div id="activation-content">
+        <div id="activation-title">J.A.R.V.I.S.</div>
+        <div id="activation-sub">Click to activate voice</div>
+      </div>
+    </div>
+
     <canvas id="orb-canvas"></canvas>
 
     <!-- Minimal controls — top right -->

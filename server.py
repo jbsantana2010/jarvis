@@ -53,10 +53,18 @@ from notes_access import get_recent_notes, read_note, search_notes_apple, create
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 import platform_adapter
+import conversation_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
 platform_adapter.log_platform_info()
+
+# Initialise conversation DB at startup (creates file + table if missing, prunes old rows)
+try:
+    conversation_db.init_db()
+    conversation_db.prune()
+except Exception as _cdb_err:
+    log.warning(f"conversation_db startup failed (non-fatal): {_cdb_err}")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -87,6 +95,7 @@ TIME & WEATHER AWARENESS:
 - Current time: {current_time}
 - Greet accordingly: "Good morning, sir" / "Good evening, sir"
 - {weather_info}
+- For weather questions, use [ACTION:WEATHER] with the requested city, or blank to use the saved default location.
 
 CONVERSATION STYLE:
 - "Will do, sir." — acknowledging tasks
@@ -97,22 +106,26 @@ CONVERSATION STYLE:
 - When you don't know something: "I'm afraid I don't have that information, sir" not "I don't know"
 
 SELF-AWARENESS:
-You ARE the JARVIS project at {project_dir} on {user_name}'s computer. Your code is Python (FastAPI server, WebSocket voice, Fish Audio TTS, Anthropic API). You were built by {user_name}. If asked about yourself, your code, how you work, or your line count — use [ACTION:PROMPT_PROJECT] to check the jarvis project. You have full access to your own source code.
+You ARE the JARVIS project at {project_dir} on {user_name}'s computer. Your code is Python (FastAPI server, WebSocket voice, Fish Audio TTS, Anthropic API). You are running inside WSL (Ubuntu on Windows). You were built by {user_name}. If asked about yourself, your code, how you work, or your line count — use [ACTION:PROMPT_PROJECT] to check the jarvis project. You have full access to your own source code.
 
 YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT NOW):
-- You CAN open Terminal.app via AppleScript
-- You CAN open Google Chrome and browse any URL or search query
-- You CAN spawn Claude Code in a Terminal window for coding tasks
-- You CAN create project folders on the Desktop
-- You CAN check Desktop projects and their git status
+- You CAN open a terminal window on Windows — Windows Terminal (wt.exe) launches automatically
+- You CAN open any URL or search query in the default Windows browser
+- You CAN open common Windows apps by name — Chrome, Edge, VS Code, Notepad, Calculator, File Explorer, Discord, Spotify, Teams, Zoom, Slack, Word, Excel, PowerPoint, Paint, PowerShell, and more
+- You CAN check the weather for any city, or use the user's saved default location from Settings
+- You CAN spawn Claude Code in a terminal window for coding tasks
+- You CAN create project folders in ~/jarvis-projects
+- You CAN check known projects and their git status
 - You CAN plan complex tasks by asking smart questions before executing
-- You CAN see what's on {user_name}'s screen — open windows, active apps, and screenshot vision
-- You CAN read {user_name}'s calendar — today's events, upcoming meetings, schedule overview
-- You CAN read {user_name}'s email (READ-ONLY) — unread count, recent messages, search by sender/subject. You CANNOT send, delete, or modify emails.
-- You CAN read Apple Notes and create NEW notes — but you CANNOT edit or delete existing notes
 - You CAN manage tasks — create, complete, and list to-do items with priorities and due dates
-- You CAN help plan {user_name}'s day — combine calendar events, tasks, and priorities into an organized plan
+- You CAN help plan {user_name}'s day — combine tasks and priorities into an organized plan
 - You CAN remember facts about {user_name} — preferences, decisions, goals. Use [ACTION:REMEMBER] to store important info.
+- You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
+
+NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
+- Apple Calendar, Apple Mail, Apple Notes — not available, do NOT pretend to read them
+- Screen capture / window list — not available on WSL
+- If asked about these, say: "That feature isn't wired up on Windows yet, sir."
 
 DAY PLANNING:
 When {user_name} asks to plan his day or schedule, DO NOT dispatch to a project. Instead:
@@ -180,15 +193,29 @@ INSTEAD SAY:
 - "Consider it done."
 - "Done, sir."
 - "Terminal is open."
-- "Pulled that up in Chrome."
+- "Pulled that up in your browser."
 
 ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
-- [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in Chrome
+- [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in their default browser
 - [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
 - [ACTION:OPEN_TERMINAL] — when user just wants a fresh Claude Code terminal with no specific project
+- [ACTION:OPEN_APP] app_name — open a Windows app by name. Use the plain human name.
+  "open chrome" → [ACTION:OPEN_APP] chrome
+  "open spotify" → [ACTION:OPEN_APP] spotify
+  "open calculator" → [ACTION:OPEN_APP] calculator
+  "launch discord" → [ACTION:OPEN_APP] discord
+  "open file explorer" → [ACTION:OPEN_APP] file explorer
+  Supported: Chrome, Edge, Firefox, VS Code, Notepad, Calculator, File Explorer, Task Manager, Discord, Slack, Teams, Zoom, Spotify, Word, Excel, PowerPoint, Paint, PowerShell, Windows Terminal
+- [ACTION:WEATHER] [location] — fetch and speak current weather. Leave location blank to use saved default.
+- [ACTION:READ_CLIPBOARD] — read and speak the user's clipboard contents. Use when user says "what's in my clipboard", "read clipboard", "what did I copy", "summarize my clipboard", etc.
+- [ACTION:WRITE_CLIPBOARD] text — write the given text to the clipboard. Use when user says "copy X to clipboard", "put that in my clipboard", "write this to clipboard: ...", etc. Put the exact text to copy as the action target.
+  "what's the weather?" → [ACTION:WEATHER]
+  "weather in Miami" → [ACTION:WEATHER] Miami
+  "what's it like in Tokyo?" → [ACTION:WEATHER] Tokyo
+  "do I need an umbrella?" → [ACTION:WEATHER]
 CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're LOOKING AT — ALWAYS use [ACTION:SCREEN] or let the fast action system handle it. NEVER use [ACTION:PROMPT_PROJECT] for screen requests. PROMPT_PROJECT is ONLY for working on code projects.
 
 - [ACTION:PROMPT_PROJECT] project_name ||| prompt — THIS IS YOUR MOST POWERFUL ACTION. Use it whenever the user wants to work on, jump into, resume, check on, or interact with ANY existing project. You connect directly to Claude Code in that project and can read its response. Craft a clear prompt based on what the user wants. Examples:
@@ -202,9 +229,9 @@ CRITICAL: When the user asks about their SCREEN, what's RUNNING, or what they're
 - [ACTION:COMPLETE_TASK] task_id — mark a task as done.
 - [ACTION:REMEMBER] content — store an important fact about the user for future context.
   "I prefer React over Vue" → [ACTION:REMEMBER] User prefers React over Vue for frontend projects
-- [ACTION:CREATE_NOTE] title ||| body — create a new Apple Note. For saving plans, ideas, lists.
-  "save that as a note" → [ACTION:CREATE_NOTE] Day Plan March 19 ||| Morning: client calls. Afternoon: TikTok dashboard. Evening: JARVIS improvements.
-- [ACTION:READ_NOTE] title search — read an existing Apple Note by title keyword.
+- [ACTION:ADD_NOTE] topic ||| content — save a note to JARVIS memory (works on all platforms).
+  "save that as a note" → [ACTION:ADD_NOTE] day plan ||| Morning: client calls. Afternoon: dashboard. Evening: JARVIS improvements.
+  NOTE: Apple Notes ([ACTION:CREATE_NOTE] / [ACTION:READ_NOTE]) are macOS-only and NOT available on this platform.
 
 You use Claude Code as your tool to build, research, and write code — but YOU are the one doing the work. Never say "Claude Code did X" or "Claude Code is asking" — say "I built X", "I'm checking on that", "I found X". You ARE the intelligence. Claude Code is just your hands.
 
@@ -650,9 +677,11 @@ async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
             system=(
                 "Classify this voice command. The user is talking to JARVIS, an AI assistant that can:\n"
                 "- Open Terminal and run Claude Code (coding AI tool)\n"
-                "- Open Chrome browser for web searches and URLs\n"
+                "- Open your default Windows browser (Chrome, Edge, Firefox, etc.) for web searches and URLs\n"
+                "- Open Windows apps by name: Discord, Spotify, VS Code, Calculator, File Explorer, Chrome, etc.\n"
                 "- Build software projects via Claude Code in Terminal\n"
-                "- Research topics by opening Chrome search\n\n"
+                "- Research topics by opening a browser search\n"
+                "- Answer weather questions for any city\n\n"
                 "Note: speech-to-text may produce errors like \"Cloud\" for \"Claude\", "
                 "\"Travis\" for \"JARVIS\", \"clock code\" for \"Claude Code\".\n\n"
                 "Return ONLY valid JSON: {\"action\": \"open_terminal|browse|build|chat\", "
@@ -660,7 +689,7 @@ async def classify_intent(text: str, client: anthropic.AsyncAnthropic) -> dict:
                 "open_terminal = user wants to open terminal or launch Claude Code\n"
                 "browse = user wants to search the web, look something up, visit a URL\n"
                 "build = user wants to create/build a software project\n"
-                "chat = just conversation, questions, or anything else\n"
+                "chat = conversation, questions, open apps, check weather, or anything else\n"
                 "If unclear, default to \"chat\"."
             ),
             messages=[{"role": "user", "content": text}],
@@ -740,12 +769,13 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
         action_type = match.group(1).lower()
-        action_target = match.group(2).strip()
+        # Take only the first line of the target — prevents LLM response text bleeding in
+        action_target = match.group(2).strip().split('\n')[0].strip()
         clean_text = response[:match.start()].strip()
         return clean_text, {"action": action_type, "target": action_target}
     return response, None
@@ -760,13 +790,39 @@ async def _execute_build(target: str):
 
 
 async def _execute_browse(target: str):
-    """Execute a browse action from an LLM-embedded [ACTION:BROWSE] tag."""
+    """Execute a browse action from an LLM-embedded [ACTION:BROWSE] tag or fast-path."""
     try:
-        if target.startswith("http") or "." in target.split()[0]:
-            await open_browser(target)
+        from urllib.parse import quote as _q
+        # Guard against newline bleed from LLM action tags
+        t = target.strip().split('\n')[0].strip()
+
+        # Strip common search prefixes that the LLM may leave in the target
+        _BROWSE_PREFIXES = (
+            "search for ", "search ", "google for ", "google ",
+            "look up ", "look for ", "find ", "pull up ",
+            "open a tab and search for ", "open a new tab and search for ",
+            "open a tab and look up ", "open a tab for ", "open a tab to ",
+            "open a browser and search for ", "open browser and search for ",
+            "new tab and search for ", "new tab search for ",
+        )
+        t_lower = t.lower()
+        for prefix in _BROWSE_PREFIXES:
+            if t_lower.startswith(prefix):
+                t = t[len(prefix):].strip()
+                t_lower = t.lower()
+                break
+
+        # Normalize: URL, domain, or search query
+        if t.startswith("http://") or t.startswith("https://"):
+            url = t
+        elif t and "." in t.split("/")[0] and " " not in t.split(".")[0]:
+            # Looks like a bare domain (no spaces before first dot)
+            url = "https://" + t
         else:
-            from urllib.parse import quote
-            await open_browser(f"https://www.google.com/search?q={quote(target)}")
+            url = f"https://www.google.com/search?q={_q(t)}"
+
+        success = await platform_adapter.open_url(url)
+        log.info(f"Browse {'opened' if success else 'FAILED'}: {url}")
     except Exception as e:
         log.error(f"Browse execution failed: {e}")
 
@@ -875,6 +931,184 @@ async def _execute_open_terminal():
         await handle_open_terminal()
     except Exception as e:
         log.error(f"Open terminal failed: {e}")
+
+
+async def _execute_open_app(app_name: str, ws=None):
+    """Open a Windows app by name. Speaks confirmation or failure."""
+    from actions import open_app as _open_app
+    result = await _open_app(app_name.strip())
+    msg = result["confirmation"]
+    log.info(f"open_app '{app_name}' → success={result['success']} msg={msg}")
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            if audio:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_open_app ws send failed: {e}")
+
+
+async def _take_and_report_screenshot(ws=None, history=None, voice_state=None):
+    """Capture a screenshot and speak back what's on the screen (via vision)."""
+    try:
+        screenshot_b64 = await take_screenshot()
+        if not screenshot_b64:
+            msg = "Screenshot capture failed, sir. The display may not be accessible."
+        else:
+            # Try vision description if anthropic_client is available
+            try:
+                vision_resp = await anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=200,
+                    system=(
+                        "You are JARVIS analyzing a screenshot of the user's desktop. "
+                        "Describe what you see concisely: which apps are open, what the user "
+                        "appears to be working on, any notable content visible. "
+                        "Be specific about app names, file names, URLs, or documents visible. "
+                        "2-3 sentences max. No markdown. Speak naturally as JARVIS."
+                    ),
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64}},
+                            {"type": "text", "text": "What's on my screen right now?"},
+                        ],
+                    }],
+                )
+                msg = vision_resp.content[0].text
+            except Exception as ve:
+                log.warning(f"Vision description failed: {ve}")
+                msg = "Screenshot taken, sir, but I couldn't describe it right now."
+
+        if ws:
+            audio = await synthesize_speech(msg)
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+
+        if history is not None:
+            history.append({"role": "assistant", "content": f"[screenshot]: {msg}"})
+        log.info(f"Screenshot reported: {msg[:80]}")
+    except Exception as e:
+        log.error(f"_take_and_report_screenshot failed: {e}")
+
+
+async def fetch_weather_for_location(location: str = "") -> str:
+    """Fetch current weather from wttr.in for a given location.
+
+    Falls back to USER_LOCATION env var, then to cached weather context.
+    Returns a plain-English string suitable for TTS.
+    """
+    loc = location.strip() or os.getenv("USER_LOCATION", "").strip()
+    if not loc:
+        cached = _ctx_cache.get("weather", "")
+        if cached and "unavailable" not in cached.lower():
+            return cached
+        return "No default location is configured, sir. You can set one in Settings."
+    try:
+        from urllib.parse import quote as _q
+        url = f"https://wttr.in/{_q(loc)}?format=%C,+%t&u"
+        async with httpx.AsyncClient(timeout=6.0) as http:
+            resp = await http.get(url, headers={"User-Agent": "curl/7.88"})
+        if resp.status_code == 200:
+            summary = resp.text.strip()
+            return f"Currently in {loc}: {summary}."
+        log.warning(f"wttr.in returned {resp.status_code} for '{loc}'")
+        return f"Couldn't get weather for {loc} right now, sir."
+    except Exception as e:
+        log.warning(f"fetch_weather_for_location failed for '{loc}': {e}")
+        return f"Weather service is unreachable at the moment, sir."
+
+
+async def _execute_weather(location: str, ws=None, history=None, voice_state=None):
+    """Fetch weather and speak it back — fires in background."""
+    result = await fetch_weather_for_location(location)
+    log.info(f"Weather result for '{location or 'default'}': {result}")
+    if ws:
+        try:
+            audio = await synthesize_speech(result)
+            if audio:
+                await ws.send_json({"type": "status", "state": "speaking"})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": result})
+                await ws.send_json({"type": "status", "state": "idle"})
+            else:
+                await ws.send_json({"type": "text", "text": result})
+        except Exception as e:
+            log.warning(f"_execute_weather ws send failed: {e}")
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[weather]: {result}"})
+
+
+async def _execute_read_clipboard(ws=None, history=None):
+    """Read clipboard and speak contents back to the user."""
+    text = await platform_adapter.read_clipboard_wsl()
+    if not text:
+        msg = "Clipboard is empty, sir."
+    elif len(text) > 800:
+        # Too long to read aloud — summarise via LLM if available, else truncate
+        if anthropic_client:
+            try:
+                resp = await anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=120,
+                    system="You are JARVIS. Summarise the clipboard content in 1-2 sentences. Natural voice, no markdown.",
+                    messages=[{"role": "user", "content": f"Clipboard:\n{text[:2000]}"}],
+                )
+                msg = resp.content[0].text
+            except Exception:
+                msg = f"Clipboard has {len(text)} characters. Starts with: {text[:120]}…"
+        else:
+            msg = f"Clipboard has {len(text)} characters. Starts with: {text[:120]}…"
+    else:
+        msg = f"Clipboard contains: {text}"
+
+    log.info(f"Clipboard read: {len(text)} chars")
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[clipboard read]: {text[:400]}"})
+    if ws:
+        try:
+            audio = await synthesize_speech(strip_markdown_for_tts(msg))
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_read_clipboard ws send failed: {e}")
+
+
+async def _execute_write_clipboard(text_to_copy: str, ws=None, history=None):
+    """Write text to clipboard and confirm."""
+    if not text_to_copy.strip():
+        msg = "Nothing to copy, sir — the target was empty."
+    else:
+        success = await platform_adapter.write_clipboard_wsl(text_to_copy)
+        if success:
+            preview = text_to_copy[:60].replace("\n", " ")
+            msg = f"Copied to clipboard, sir." if len(text_to_copy) <= 60 else f"Copied {len(text_to_copy)} characters to clipboard, sir."
+        else:
+            msg = "Clipboard write failed, sir. Clipboard may not be accessible."
+
+    log.info(f"Clipboard write: {len(text_to_copy)} chars, result: {msg[:60]}")
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[clipboard write]: {text_to_copy[:200]}"})
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_write_clipboard ws send failed: {e}")
 
 
 def _find_project_dir(project_name: str) -> str | None:
@@ -1318,16 +1552,21 @@ return windowList
             except Exception as e:
                 log.debug(f"Context thread error: {e}")
 
-            # Weather — refresh every loop (30s is fine, API is fast)
+            # Weather — refresh every loop using USER_LOCATION from env
             try:
-                import urllib.request, json as _json
-                url = "https://api.open-meteo.com/v1/forecast?latitude=27.77&longitude=-82.64&current=temperature_2m,weathercode&temperature_unit=fahrenheit"
-                with urllib.request.urlopen(url, timeout=3) as resp:
-                    d = _json.loads(resp.read()).get("current", {})
-                    temp = d.get("temperature_2m", "?")
-                    _ctx_cache["weather"] = f"Current weather in St. Petersburg, FL: {temp}°F"
-            except Exception:
-                pass
+                import urllib.request, urllib.parse as _up
+                loc = os.getenv("USER_LOCATION", "").strip()
+                if loc:
+                    encoded = _up.quote(loc)
+                    url = f"https://wttr.in/{encoded}?format=%C,+%t&u"
+                    req = urllib.request.Request(url, headers={"User-Agent": "curl/7.88"})
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        summary = resp.read().decode().strip()
+                    _ctx_cache["weather"] = f"Current weather in {loc}: {summary}."
+                else:
+                    _ctx_cache["weather"] = "No default location set. User can add one in Settings."
+            except Exception as _we:
+                log.debug(f"Weather refresh failed: {_we}")
 
             time.sleep(30)
 
@@ -1460,15 +1699,84 @@ def detect_action_fast(text: str) -> dict | None:
     t = text.lower().strip()
     words = t.split()
 
-    # Only trigger on SHORT, clear commands (< 12 words)
-    if len(words) > 12:
+    # Only trigger on SHORT, clear commands (< 14 words)
+    if len(words) > 14:
         return None  # Long messages are conversation, not commands
 
-    # Screen requests — checked BEFORE project matching to prevent misrouting
+    # Screenshot — explicit capture requests (must be before screen describe)
+    if any(p in t for p in ["take a screenshot", "take screenshot", "grab a screenshot",
+                             "grab screenshot", "capture my screen", "capture the screen",
+                             "screenshot", "screen capture"]):
+        return {"action": "take_screenshot"}
+
+    # Screen describe requests
     if any(p in t for p in ["look at my screen", "what's on my screen", "whats on my screen",
                              "what am i looking at", "what do you see", "see my screen",
                              "what's running on my", "whats running on my", "check my screen"]):
         return {"action": "describe_screen"}
+
+    # Clipboard read fast path
+    if any(p in t for p in [
+        "what's in my clipboard", "whats in my clipboard",
+        "what is in my clipboard", "read my clipboard", "read clipboard",
+        "check my clipboard", "what's on my clipboard", "what did i copy",
+        "what did i just copy", "summarize my clipboard", "summarise my clipboard",
+        "show me my clipboard", "paste from clipboard", "read what i copied",
+    ]):
+        return {"action": "read_clipboard"}
+
+    # Clipboard write fast path — "copy X to clipboard" / "put X in my clipboard"
+    _CLIP_WRITE_PREFIXES = (
+        "copy to clipboard: ", "copy this to clipboard: ",
+        "put in my clipboard: ", "put this in my clipboard: ",
+        "write to clipboard: ", "write this to clipboard: ",
+        "clipboard copy: ", "add to clipboard: ",
+    )
+    for _cp in _CLIP_WRITE_PREFIXES:
+        if t.startswith(_cp):
+            _clip_text = user_text[len(_cp):].strip()
+            if _clip_text:
+                return {"action": "write_clipboard", "target": _clip_text}
+            break
+
+    # Browser / search fast path — catches "search for X", "open a tab and search for X", etc.
+    # Phrase must start with one of these prefixes (word-count guard already applied above).
+    _SEARCH_PREFIXES = (
+        "search for ", "search the web for ", "google ",
+        "look up ", "look this up: ", "find me ",
+        "open a tab and search for ", "open a new tab and search for ",
+        "open a tab and look up ", "open a tab for ", "open browser and search for ",
+        "new tab and search for ", "search online for ",
+    )
+    for _sp in _SEARCH_PREFIXES:
+        if t.startswith(_sp):
+            _query = user_text[len(_sp):].strip()
+            if _query:
+                return {"action": "browse", "target": _query}
+            break
+
+    # App launching — fast path so it never depends on LLM generating the right tag
+    _APP_FAST = {
+        "calculator": "calculator", "calc": "calculator",
+        "discord": "discord", "spotify": "spotify",
+        "chrome": "chrome", "google chrome": "chrome",
+        "edge": "edge", "firefox": "firefox",
+        "notepad": "notepad", "notepad++": "notepad++",
+        "file explorer": "file explorer", "explorer": "file explorer",
+        "vscode": "vscode", "vs code": "vscode", "visual studio code": "vscode",
+        "task manager": "task manager", "taskmgr": "task manager",
+        "paint": "paint", "mspaint": "paint",
+        "powershell": "powershell",
+        "word": "word", "excel": "excel", "powerpoint": "powerpoint",
+        "outlook": "outlook", "slack": "slack", "teams": "teams",
+        "zoom": "zoom", "telegram": "telegram",
+        "vlc": "vlc",
+    }
+    for app_key, app_name in _APP_FAST.items():
+        if (f"open {app_key}" in t or f"launch {app_key}" in t or
+                f"start {app_key}" in t or f"run {app_key}" in t or
+                f"open up {app_key}" in t or f"find {app_key}" in t):
+            return {"action": "open_app", "target": app_name}
 
     # Terminal / Claude Code — explicit open requests
     if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
@@ -1612,22 +1920,18 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
 
         _active_lookups[lookup_id]["status"] = "done"
 
-        # Speak the result — skip audio if user spoke recently to avoid collision
-        if voice_state and time.time() - voice_state["last_user_time"] < 3:
-            log.info(f"Skipping lookup audio for {lookup_type} — user spoke recently")
-            # Result is still stored in history below
-        else:
-            tts = strip_markdown_for_tts(result_text)
-            audio = await synthesize_speech(tts)
-            try:
-                await ws.send_json({"type": "status", "state": "speaking"})
-                if audio:
-                    await ws.send_json({"type": "audio", "data": audio, "text": result_text})
-                else:
-                    await ws.send_json({"type": "text", "text": result_text})
-                await ws.send_json({"type": "status", "state": "idle"})
-            except Exception:
-                pass
+        # Always speak the result — lookup was explicitly requested by the user
+        tts = strip_markdown_for_tts(result_text)
+        audio = await synthesize_speech(tts)
+        try:
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": result_text})
+            else:
+                await ws.send_json({"type": "text", "text": result_text})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception:
+            pass
 
         log.info(f"Lookup {lookup_type} complete: {result_text[:80]}")
 
@@ -1657,6 +1961,11 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
 
 async def _do_calendar_lookup() -> str:
     """Slow calendar fetch — runs in thread."""
+    if platform_adapter.PLATFORM in ("wsl", "windows"):
+        return (
+            "Calendar integration isn't available on Windows yet, sir. "
+            "I can remind you of things if you tell them to me directly."
+        )
     await refresh_calendar_cache()
     events = await get_todays_events()
     if events:
@@ -1666,6 +1975,11 @@ async def _do_calendar_lookup() -> str:
 
 async def _do_mail_lookup() -> str:
     """Slow mail fetch — runs in thread."""
+    if platform_adapter.PLATFORM in ("wsl", "windows"):
+        return (
+            "Mail integration isn't connected on Windows yet, sir. "
+            "I can help you draft or compose messages if you'd like."
+        )
     unread_info = await get_unread_count()
     if isinstance(unread_info, dict):
         _ctx_cache["mail"] = format_unread_summary(unread_info)
@@ -1876,7 +2190,13 @@ async def voice_handler(ws: WebSocket):
     """
     await ws.accept()
     task_manager.register_websocket(ws)
-    history: list[dict] = []
+
+    # Load recent conversation from DB so JARVIS has context after a restart
+    _prior = conversation_db.load_recent()
+    history: list[dict] = list(_prior)  # mutable copy
+    if _prior:
+        log.info(f"Conversation DB: loaded {len(_prior)} prior messages into history")
+
     work_session = WorkSession()
     planner = TaskPlanner()
 
@@ -1886,6 +2206,9 @@ async def voice_handler(ws: WebSocket):
 
     # Audio collision prevention — track when user last spoke
     voice_state = {"last_user_time": 0.0}
+
+    # Unique ID for this WebSocket session (used as DB partition key)
+    _ws_session_id = f"{int(_session_start)}-{int(time.time())}"
 
     # Self-awareness — track last spoken response to avoid repetition
     last_jarvis_response = ""
@@ -2045,7 +2368,43 @@ async def voice_handler(ws: WebSocket):
 
                 # ── WORK MODE: speech → claude -p → Haiku summary → JARVIS voice ──
                 elif work_session.active:
-                    if is_casual_question(user_text):
+                    # Stop phrases — exit work mode immediately
+                    _WORK_STOP_PHRASES = (
+                        "stop", "cancel", "never mind", "nevermind",
+                        "stop that", "cancel that", "forget it", "abort",
+                        "stop jarvis", "hold on", "pause",
+                    )
+                    _work_fast = detect_action_fast(user_text)
+                    if any(phrase == t_lower.strip() or t_lower.strip().startswith(phrase + " ")
+                           for phrase in _WORK_STOP_PHRASES):
+                        await work_session.stop()
+                        response_text = "Stopping, sir. Back to conversation mode."
+                    # Fast actions bypass claude -p even while work mode is active
+                    elif _work_fast and _work_fast["action"] in (
+                            "take_screenshot", "open_app", "open_terminal", "describe_screen",
+                            "browse", "read_clipboard", "write_clipboard"):
+                        if _work_fast["action"] == "take_screenshot":
+                            response_text = "Taking a screenshot now, sir."
+                            asyncio.create_task(_take_and_report_screenshot(ws, history=history, voice_state=voice_state))
+                        elif _work_fast["action"] == "open_app":
+                            _wa_target = _work_fast.get("target", "that app")
+                            response_text = f"Opening {_wa_target}, sir."
+                            asyncio.create_task(_execute_open_app(_wa_target, ws))
+                        elif _work_fast["action"] == "open_terminal":
+                            response_text = await handle_open_terminal()
+                        elif _work_fast["action"] == "describe_screen":
+                            response_text = "Taking a look now, sir."
+                            asyncio.create_task(_lookup_and_report("screen", _do_screen_lookup, ws, history=history, voice_state=voice_state))
+                        elif _work_fast["action"] == "browse":
+                            response_text = "Pulling that up, sir."
+                            asyncio.create_task(_execute_browse(_work_fast.get("target", "")))
+                        elif _work_fast["action"] == "read_clipboard":
+                            response_text = "Checking your clipboard, sir."
+                            asyncio.create_task(_execute_read_clipboard(ws, history=history))
+                        elif _work_fast["action"] == "write_clipboard":
+                            response_text = "Copying that, sir."
+                            asyncio.create_task(_execute_write_clipboard(_work_fast.get("target", ""), ws, history=history))
+                    elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
                             user_text, anthropic_client, task_manager,
@@ -2145,6 +2504,24 @@ async def voice_handler(ws: WebSocket):
                             response_text = format_tasks_for_voice(tasks)
                         elif action["action"] == "check_usage":
                             response_text = get_usage_summary()
+                        elif action["action"] == "take_screenshot":
+                            response_text = "Taking a screenshot now, sir."
+                            asyncio.create_task(_take_and_report_screenshot(ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "open_app":
+                            app_target = action.get("target", "that app")
+                            response_text = f"Opening {app_target} now, sir."
+                            asyncio.create_task(_execute_open_app(app_target, ws))
+                        elif action["action"] == "browse":
+                            browse_target = action.get("target", "")
+                            response_text = "Pulling that up now, sir."
+                            asyncio.create_task(_execute_browse(browse_target))
+                        elif action["action"] == "read_clipboard":
+                            response_text = "Checking your clipboard, sir."
+                            asyncio.create_task(_execute_read_clipboard(ws, history=history))
+                        elif action["action"] == "write_clipboard":
+                            clip_text = action.get("target", "")
+                            response_text = "Copying that now, sir."
+                            asyncio.create_task(_execute_write_clipboard(clip_text, ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -2217,6 +2594,10 @@ async def voice_handler(ws: WebSocket):
                                     )
                                 elif embedded_action["action"] == "open_terminal":
                                     asyncio.create_task(_execute_open_terminal())
+                                elif embedded_action["action"] == "open_app":
+                                    asyncio.create_task(_execute_open_app(embedded_action["target"], ws))
+                                elif embedded_action["action"] == "weather":
+                                    asyncio.create_task(_execute_weather(embedded_action["target"].strip(), ws, history=history, voice_state=voice_state))
                                 elif embedded_action["action"] == "prompt_project":
                                     target = embedded_action["target"]
                                     if "|||" in target:
@@ -2289,10 +2670,20 @@ async def voice_handler(ws: WebSocket):
                                             except Exception:
                                                 pass
                                     asyncio.create_task(_read_and_report(embedded_action["target"].strip(), ws))
+                                elif embedded_action["action"] == "read_clipboard":
+                                    asyncio.create_task(_execute_read_clipboard(ws, history=history))
+                                elif embedded_action["action"] == "write_clipboard":
+                                    asyncio.create_task(_execute_write_clipboard(embedded_action["target"], ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": response_text})
+
+                # Persist this exchange so JARVIS remembers it across restarts
+                try:
+                    conversation_db.save_turn(_ws_session_id, user_text, response_text)
+                except Exception:
+                    pass  # never let persistence errors affect the voice loop
 
                 # Three-tier memory: also track in session buffer
                 session_buffer.append({"role": "user", "content": user_text})
@@ -2412,10 +2803,12 @@ class PreferencesUpdate(BaseModel):
     user_name: str = ""
     honorific: str = "sir"
     calendar_accounts: str = "auto"
+    location: str = ""          # default location for weather and time-aware features
+    screenshot_path: str = ""   # Windows path override for screenshot saves
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
-    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS"}
+    allowed = {"ANTHROPIC_API_KEY", "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC", "CALENDAR_ACCOUNTS", "USER_LOCATION", "SCREENSHOT_PATH"}
     if body.key_name not in allowed:
         return JSONResponse({"success": False, "error": "Invalid key name"}, status_code=400)
     _write_env_key(body.key_name, body.key_value)
@@ -2495,6 +2888,8 @@ async def api_get_preferences():
         "user_name": env_dict.get("USER_NAME", ""),
         "honorific": env_dict.get("HONORIFIC", "sir"),
         "calendar_accounts": env_dict.get("CALENDAR_ACCOUNTS", "auto"),
+        "location": env_dict.get("USER_LOCATION", ""),
+        "screenshot_path": env_dict.get("SCREENSHOT_PATH", ""),
     }
 
 @app.post("/api/settings/preferences")
@@ -2502,6 +2897,12 @@ async def api_save_preferences(body: PreferencesUpdate):
     _write_env_key("USER_NAME", body.user_name)
     _write_env_key("HONORIFIC", body.honorific)
     _write_env_key("CALENDAR_ACCOUNTS", body.calendar_accounts)
+    _write_env_key("USER_LOCATION", body.location)
+    if body.screenshot_path:
+        _write_env_key("SCREENSHOT_PATH", body.screenshot_path)
+    elif "SCREENSHOT_PATH" in os.environ:
+        # If user cleared the field, remove override so default path resumes
+        _write_env_key("SCREENSHOT_PATH", "")
     return {"success": True}
 
 # ---------------------------------------------------------------------------

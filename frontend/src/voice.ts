@@ -164,8 +164,14 @@ export function createAudioPlayer(): AudioPlayer {
         if (!isPlaying) playNext();
       } catch (err) {
         console.error("[audio] decode error:", err);
-        // Skip bad audio, continue
-        if (!isPlaying && queue.length > 0) playNext();
+        if (!isPlaying) {
+          if (queue.length > 0) {
+            playNext();
+          } else {
+            // Nothing queued or playing — unblock the state machine
+            finishedCallback?.();
+          }
+        }
       }
     },
 
