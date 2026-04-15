@@ -636,3 +636,60 @@ async def _launch_windows_app(executable: str, display_name: str) -> tuple[bool,
     except Exception as e:
         log.error(f"_launch_windows_app failed for '{executable}': {e}")
         return False, f"Had trouble opening {display_name}, sir."
+
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+async def _wait_and_forget(proc) -> None:
+    """Silently wait for a fire-and-forget background subprocess."""
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=15)
+    except Exception:
+        pass
+
+
+async def notify_windows(title: str, message: str) -> bool:
+    """Show a desktop notification.
+
+    macOS  : AppleScript display notification
+    WSL    : PowerShell NotifyIcon balloon — visible even when browser is
+             closed; no extra installs required on Windows 10/11.
+
+    Returns True if the notification was dispatched successfully.
+    """
+    if is_macos():
+        safe_msg   = message.replace('"', '\\"')
+        safe_title = title.replace('"', '\\"')
+        script = f'display notification "{safe_msg}" with title "{safe_title}"'
+        _, _, rc = await run_applescript(script)
+        return rc == 0
+
+    # WSL / Windows — PowerShell balloon notification
+    safe_msg   = message.replace("'", "''")
+    safe_title = title.replace("'", "''")
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$n = New-Object System.Windows.Forms.NotifyIcon; "
+        "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+        "$n.Visible = $true; "
+        f"$n.BalloonTipTitle = '{safe_title}'; "
+        f"$n.BalloonTipText = '{safe_msg}'; "
+        "$n.BalloonTipIcon = 'Info'; "
+        "$n.ShowBalloonTip(8000); "
+        "Start-Sleep 9; "
+        "$n.Dispose()"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "powershell.exe", "-WindowStyle", "Hidden", "-NonInteractive",
+            "-Command", ps,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        asyncio.create_task(_wait_and_forget(proc))
+        return True
+    except Exception as e:
+        log.warning(f"notify_windows failed: {e}")
+        return False

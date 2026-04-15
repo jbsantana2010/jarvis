@@ -53,6 +53,7 @@ from notes_access import get_recent_notes, read_note, search_notes_apple, create
 from dispatch_registry import DispatchRegistry
 from planner import TaskPlanner, detect_planning_mode, BYPASS_PHRASES
 import platform_adapter
+import reminders
 import conversation_db
 import mail_gmail
 
@@ -66,6 +67,10 @@ try:
     conversation_db.prune()
 except Exception as _cdb_err:
     log.warning(f"conversation_db startup failed (non-fatal): {_cdb_err}")
+try:
+    reminders.init_db()
+except Exception as _rem_err:
+    log.warning(f"reminders startup failed (non-fatal): {_rem_err}")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -123,6 +128,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN remember facts about {user_name} — preferences, decisions, goals. Use [ACTION:REMEMBER] to store important info.
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
 - You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
+- You CAN create and manage reminders — set timed reminders for anything and list pending ones. Use [ACTION:SET_REMINDER] and [ACTION:LIST_REMINDERS].
 
 NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
 - Apple Calendar, Apple Notes — not available, do NOT pretend to read them
@@ -217,6 +223,11 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:WRITE_CLIPBOARD] text — write the given text to the clipboard. Use when user says "copy X to clipboard", "put that in my clipboard", "write this to clipboard: ...", etc. Put the exact text to copy as the action target.
 - [ACTION:READ_MAIL] — fetch and speak recent Gmail messages (sender, subject, unread status). Use when user says "check my email", "what emails do I have", "any new mail", "read my email", "latest emails", "what's in my inbox", etc.
 - [ACTION:SUMMARIZE_MAIL] — use AI to summarize Gmail inbox and highlight what matters. Use when user says "summarize my inbox", "any important emails", "what should I know about my email", "inbox summary", "any urgent emails", etc.
+- [ACTION:SET_REMINDER] <time_expression> ||| <message> — create a timed reminder. time_expression is natural language: "in 10 minutes", "at 6 PM", "tomorrow at 9 AM". Message is what to remind about.
+  "remind me in 10 minutes to stretch" → [ACTION:SET_REMINDER] in 10 minutes ||| stretch
+  "remind me at 6 PM to start stream prep" → [ACTION:SET_REMINDER] at 6 PM ||| start stream prep
+  "remind me tomorrow at 9 AM to review Jarvis" → [ACTION:SET_REMINDER] tomorrow at 9 AM ||| review Jarvis
+- [ACTION:LIST_REMINDERS] — list all pending reminders. Use when user says "what reminders do I have", "show my reminders", "any reminders?", "list reminders", etc.
   "what's the weather?" → [ACTION:WEATHER]
   "weather in Miami" → [ACTION:WEATHER] Miami
   "what's it like in Tokyo?" → [ACTION:WEATHER] Tokyo
@@ -774,7 +785,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|SET_REMINDER|LIST_REMINDERS)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1203,6 +1214,105 @@ async def _execute_summarize_mail(ws=None, history=None):
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception as e:
             log.warning("_execute_summarize_mail ws send failed: %s", e)
+
+
+async def _execute_set_reminder(target: str, ws=None, history=None) -> str:
+    """Create a reminder from [ACTION:SET_REMINDER] target.
+
+    Target format: "<time_expression> ||| <message>"
+    Example: "in 10 minutes ||| stretch"
+    """
+    from datetime import datetime as _dt
+    if "|||" not in target:
+        msg = "I couldn't parse that reminder, sir. Try: 'remind me in 10 minutes to stretch'."
+    else:
+        time_expr, _, reminder_msg = target.partition("|||")
+        time_expr    = time_expr.strip()
+        reminder_msg = reminder_msg.strip()
+        dt = reminders.parse_time(time_expr)
+        if not dt:
+            msg = f"I'm afraid I couldn't parse '{time_expr}' as a time, sir."
+        else:
+            rid = reminders.add_reminder(reminder_msg, dt.timestamp())
+            now = _dt.now()
+            delta_mins = int((dt - now).total_seconds() / 60)
+            if delta_mins < 60:
+                when_str = f"in {delta_mins} minute{'s' if delta_mins != 1 else ''}"
+            elif delta_mins < 1440:
+                hrs = round((dt - now).total_seconds() / 3600, 1)
+                when_str = f"in {hrs} hour{'s' if hrs != 1.0 else ''}"
+            else:
+                when_str = dt.strftime("%A at %-I:%M %p")
+            msg = f"Done, sir. I'll remind you to {reminder_msg} {when_str}."
+            log.info(f"Reminder created (id={rid}): '{reminder_msg}' at {dt}")
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_set_reminder ws send failed: {e}")
+    return msg
+
+
+async def _execute_list_reminders(ws=None, history=None) -> str:
+    """Speak all upcoming reminders."""
+    upcoming = reminders.get_upcoming()
+    msg = reminders.format_upcoming(upcoming)
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_list_reminders ws send failed: {e}")
+    return msg
+
+
+async def _reminder_scheduler_loop():
+    """Background loop: checks for due reminders every 30 seconds.
+
+    When a reminder fires:
+      1. Mark it done immediately (prevents double-firing).
+      2. Show a Windows notification (visible even when browser is closed).
+      3. Speak it via TTS if any WebSocket client is connected.
+    """
+    log.info("Reminder scheduler started (interval: 30s)")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            due = reminders.get_due()
+            for r in due:
+                log.info(f"Reminder firing: {r['message']}")
+                reminders.mark_done(r["id"])  # mark first — never double-fire
+                asyncio.create_task(
+                    platform_adapter.notify_windows("JARVIS Reminder", r["message"])
+                )
+                if task_manager._websockets:
+                    msg   = f"Reminder, sir: {r['message']}"
+                    audio = await synthesize_speech(msg)
+                    dead  = []
+                    for _ws in list(task_manager._websockets):
+                        try:
+                            if audio:
+                                await _ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+                            else:
+                                await _ws.send_json({"type": "text", "text": msg})
+                        except Exception:
+                            dead.append(_ws)
+                    for _ws in dead:
+                        try:
+                            task_manager._websockets.remove(_ws)
+                        except ValueError:
+                            pass
+        except Exception as e:
+            log.warning(f"reminder scheduler error: {e}")
 
 
 def _find_project_dir(project_name: str) -> str | None:
@@ -1680,6 +1790,7 @@ async def lifespan(application: FastAPI):
 
     # Start context refresh in a separate thread (never touches event loop)
     _refresh_context_sync()
+    asyncio.create_task(_reminder_scheduler_loop())
     log.info("JARVIS server starting")
 
     yield
@@ -1871,6 +1982,14 @@ def detect_action_fast(text: str) -> dict | None:
                 f"start {app_key}" in t or f"run {app_key}" in t or
                 f"open up {app_key}" in t or f"find {app_key}" in t):
             return {"action": "open_app", "target": app_name}
+
+    # Reminder — list fast path
+    if any(p in t for p in [
+        "what reminders do i have", "show my reminders", "list my reminders",
+        "list reminders", "my reminders", "any reminders", "show reminders",
+        "pending reminders", "what are my reminders", "do i have any reminders",
+    ]):
+        return {"action": "list_reminders"}
 
     # Terminal / Claude Code — explicit open requests
     if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
@@ -2484,7 +2603,7 @@ async def voice_handler(ws: WebSocket):
                     elif _work_fast and _work_fast["action"] in (
                             "take_screenshot", "open_app", "open_terminal", "describe_screen",
                             "browse", "read_clipboard", "write_clipboard",
-                            "check_mail", "summarize_mail"):
+                            "check_mail", "summarize_mail", "list_reminders"):
                         if _work_fast["action"] == "take_screenshot":
                             response_text = "Taking a screenshot now, sir."
                             asyncio.create_task(_take_and_report_screenshot(ws, history=history, voice_state=voice_state))
@@ -2512,6 +2631,9 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "summarize_mail":
                             response_text = "Summarizing your inbox, sir."
                             asyncio.create_task(_execute_summarize_mail(ws, history=history))
+                        elif _work_fast["action"] == "list_reminders":
+                            response_text = "Checking your reminders, sir."
+                            asyncio.create_task(_execute_list_reminders(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -2633,6 +2755,9 @@ async def voice_handler(ws: WebSocket):
                             clip_text = action.get("target", "")
                             response_text = "Copying that now, sir."
                             asyncio.create_task(_execute_write_clipboard(clip_text, ws, history=history))
+                        elif action["action"] == "list_reminders":
+                            response_text = "Checking your reminders, sir."
+                            asyncio.create_task(_execute_list_reminders(ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -2789,6 +2914,10 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_read_mail(ws, history=history))
                                 elif embedded_action["action"] == "summarize_mail":
                                     asyncio.create_task(_execute_summarize_mail(ws, history=history))
+                                elif embedded_action["action"] == "set_reminder":
+                                    asyncio.create_task(_execute_set_reminder(embedded_action["target"], ws, history=history))
+                                elif embedded_action["action"] == "list_reminders":
+                                    asyncio.create_task(_execute_list_reminders(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
