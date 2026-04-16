@@ -56,6 +56,7 @@ import platform_adapter
 import reminders
 import conversation_db
 import mail_gmail
+import obs_controller
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -133,6 +134,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
 - You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
+- You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
 
 NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
 - Apple Calendar, Apple Notes — not available, do NOT pretend to read them
@@ -242,6 +244,14 @@ When you decide the user needs something DONE (not just discussed), include an a
   "remind me every day at 8 AM to check email" → [ACTION:SET_REMINDER] every day at 8 AM ||| check email
   "remind me every weekday at 9 AM for standup" → [ACTION:SET_REMINDER] every weekday at 9 AM ||| standup
   "remind me every monday at 6 PM for team meeting" → [ACTION:SET_REMINDER] every monday at 6 PM ||| team meeting
+- [ACTION:OBS_STATUS] — get current OBS stream/recording/scene status. Fast-path: "am I live", "stream status", "what's my stream".
+- [ACTION:START_STREAM] — start the OBS stream. Use on explicit "go live", "start stream", "start streaming".
+- [ACTION:STOP_STREAM] — stop the OBS stream. SAFETY: only trigger on EXPLICIT stop commands: "stop stream", "stop streaming", "end stream", "go offline". Never infer.
+- [ACTION:START_RECORDING] — start OBS recording.
+- [ACTION:STOP_RECORDING] — stop OBS recording. SAFETY: explicit commands only.
+- [ACTION:SWITCH_SCENE] <scene_name> — switch to the named OBS scene (fuzzy match). "switch to BRB" → [ACTION:SWITCH_SCENE] BRB
+- [ACTION:LIST_SCENES] — list available OBS scenes.
+- [ACTION:TOGGLE_MIC] — toggle mute on the primary OBS mic input. "mute my mic" or "unmute my mic" → [ACTION:TOGGLE_MIC]
   "what's the weather?" → [ACTION:WEATHER]
   "weather in Miami" → [ACTION:WEATHER] Miami
   "what's it like in Tokyo?" → [ACTION:WEATHER] Tokyo
@@ -799,7 +809,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1301,6 +1311,85 @@ async def _execute_list_reminders(ws=None, history=None) -> str:
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception as e:
             log.warning(f"_execute_list_reminders ws send failed: {e}")
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# OBS executor helpers
+# ---------------------------------------------------------------------------
+
+async def _obs_speak(msg: str, ws) -> None:
+    """TTS-send a message over WebSocket and send idle state."""
+    if not ws:
+        return
+    try:
+        audio = await synthesize_speech(msg)
+        if audio:
+            await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+        else:
+            await ws.send_json({"type": "text", "text": msg})
+        await ws.send_json({"type": "status", "state": "idle"})
+    except Exception as e:
+        log.warning(f"OBS speak send failed: {e}")
+
+
+async def _execute_obs_status(ws=None, history=None) -> str:
+    """Report OBS stream/recording/scene status."""
+    status = await obs_controller.get_status()
+    if status is None:
+        msg = "OBS doesn't appear to be running, sir."
+    else:
+        msg = obs_controller.format_status(status)
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_start_stream(ws=None, history=None) -> str:
+    """Start OBS stream."""
+    _, msg = await obs_controller.start_stream()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_stop_stream(ws=None, history=None) -> str:
+    """Stop OBS stream (explicit command only)."""
+    _, msg = await obs_controller.stop_stream()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_start_recording(ws=None, history=None) -> str:
+    """Start OBS recording."""
+    _, msg = await obs_controller.start_recording()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_stop_recording(ws=None, history=None) -> str:
+    """Stop OBS recording (explicit command only)."""
+    _, msg = await obs_controller.stop_recording()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_switch_scene(target: str, ws=None, history=None) -> str:
+    """Switch to the best-matching OBS scene."""
+    _, msg = await obs_controller.switch_scene(target.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_list_scenes(ws=None, history=None) -> str:
+    """List available OBS scenes."""
+    _, msg = await obs_controller.list_scenes()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_toggle_mic(ws=None, history=None) -> str:
+    """Toggle the OBS microphone mute state."""
+    _, msg = await obs_controller.toggle_mic()
+    await _obs_speak(msg, ws)
     return msg
 
 
@@ -2116,6 +2205,58 @@ def detect_action_fast(text: str) -> dict | None:
         duration = m_snooze.group(1).strip() if m_snooze else "10 minutes"
         return {"action": "snooze_reminder", "target": duration}
 
+    # OBS — status fast path
+    if any(p in t for p in [
+        "am i live", "am i streaming", "stream status", "my stream status",
+        "what's my stream", "whats my stream", "obs status", "is obs running",
+        "are we live", "are we streaming",
+    ]):
+        return {"action": "obs_status"}
+
+    # OBS — start stream
+    if any(p in t for p in [
+        "go live", "start stream", "start streaming", "start the stream",
+        "begin stream", "begin streaming",
+    ]):
+        return {"action": "start_stream"}
+
+    # OBS — stop stream (SAFETY: explicit phrases only)
+    if any(p in t for p in [
+        "stop stream", "stop streaming", "stop the stream",
+        "end stream", "end the stream", "end streaming", "go offline",
+    ]):
+        return {"action": "stop_stream"}
+
+    # OBS — recording control
+    if any(p in t for p in ["start recording", "start the recording", "begin recording"]):
+        return {"action": "start_recording"}
+    if any(p in t for p in ["stop recording", "stop the recording", "end recording"]):
+        return {"action": "stop_recording"}
+
+    # OBS — list scenes
+    if any(p in t for p in [
+        "what scenes do i have", "list my scenes", "list scenes",
+        "show my scenes", "what obs scenes", "my obs scenes",
+    ]):
+        return {"action": "list_scenes"}
+
+    # OBS — switch scene
+    if any(p in t for p in ["switch to ", "switch scene", "change scene", "go to scene"]):
+        import re as _re_obs
+        m = _re_obs.search(r'(?:switch to|go to|change to|change scene to)\s+(.+)$', t)
+        scene_query = m.group(1).strip() if m else t
+        for stop in ("scene", "view", "layout"):
+            scene_query = scene_query.removesuffix(" " + stop).strip()
+        return {"action": "switch_scene", "target": scene_query}
+
+    # OBS — mic toggle
+    if any(p in t for p in [
+        "mute my mic", "mute the mic", "mute mic",
+        "unmute my mic", "unmute the mic", "unmute mic",
+        "toggle my mic", "toggle mic", "toggle the mic",
+    ]):
+        return {"action": "toggle_mic"}
+
     # Terminal / Claude Code — explicit open requests
     if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
         return {"action": "open_terminal"}
@@ -2765,6 +2906,30 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "snooze_reminder":
                             response_text = "Snoozing that, sir."
                             asyncio.create_task(_execute_snooze_reminder(_work_fast.get("target", "10 minutes"), ws, history=history))
+                        elif _work_fast["action"] == "obs_status":
+                            response_text = "Checking OBS status, sir."
+                            asyncio.create_task(_execute_obs_status(ws, history=history))
+                        elif _work_fast["action"] == "start_stream":
+                            response_text = "Starting the stream, sir."
+                            asyncio.create_task(_execute_start_stream(ws, history=history))
+                        elif _work_fast["action"] == "stop_stream":
+                            response_text = "Stopping the stream, sir."
+                            asyncio.create_task(_execute_stop_stream(ws, history=history))
+                        elif _work_fast["action"] == "start_recording":
+                            response_text = "Starting recording, sir."
+                            asyncio.create_task(_execute_start_recording(ws, history=history))
+                        elif _work_fast["action"] == "stop_recording":
+                            response_text = "Stopping recording, sir."
+                            asyncio.create_task(_execute_stop_recording(ws, history=history))
+                        elif _work_fast["action"] == "switch_scene":
+                            response_text = "Switching scene, sir."
+                            asyncio.create_task(_execute_switch_scene(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "list_scenes":
+                            response_text = "Checking your scenes, sir."
+                            asyncio.create_task(_execute_list_scenes(ws, history=history))
+                        elif _work_fast["action"] == "toggle_mic":
+                            response_text = "Toggling your mic, sir."
+                            asyncio.create_task(_execute_toggle_mic(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -2895,6 +3060,30 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "snooze_reminder":
                             response_text = "Snoozing that, sir."
                             asyncio.create_task(_execute_snooze_reminder(action.get("target", "10 minutes"), ws, history=history))
+                        elif action["action"] == "obs_status":
+                            response_text = "Checking OBS status, sir."
+                            asyncio.create_task(_execute_obs_status(ws, history=history))
+                        elif action["action"] == "start_stream":
+                            response_text = "Starting the stream, sir."
+                            asyncio.create_task(_execute_start_stream(ws, history=history))
+                        elif action["action"] == "stop_stream":
+                            response_text = "Stopping the stream, sir."
+                            asyncio.create_task(_execute_stop_stream(ws, history=history))
+                        elif action["action"] == "start_recording":
+                            response_text = "Starting recording, sir."
+                            asyncio.create_task(_execute_start_recording(ws, history=history))
+                        elif action["action"] == "stop_recording":
+                            response_text = "Stopping recording, sir."
+                            asyncio.create_task(_execute_stop_recording(ws, history=history))
+                        elif action["action"] == "switch_scene":
+                            response_text = "Switching scene, sir."
+                            asyncio.create_task(_execute_switch_scene(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "list_scenes":
+                            response_text = "Checking your scenes, sir."
+                            asyncio.create_task(_execute_list_scenes(ws, history=history))
+                        elif action["action"] == "toggle_mic":
+                            response_text = "Toggling your mic, sir."
+                            asyncio.create_task(_execute_toggle_mic(ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -3059,6 +3248,22 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_cancel_reminder(embedded_action.get("target", ""), ws, history=history))
                                 elif embedded_action["action"] == "snooze_reminder":
                                     asyncio.create_task(_execute_snooze_reminder(embedded_action.get("target", "10 minutes"), ws, history=history))
+                                elif embedded_action["action"] == "obs_status":
+                                    asyncio.create_task(_execute_obs_status(ws, history=history))
+                                elif embedded_action["action"] == "start_stream":
+                                    asyncio.create_task(_execute_start_stream(ws, history=history))
+                                elif embedded_action["action"] == "stop_stream":
+                                    asyncio.create_task(_execute_stop_stream(ws, history=history))
+                                elif embedded_action["action"] == "start_recording":
+                                    asyncio.create_task(_execute_start_recording(ws, history=history))
+                                elif embedded_action["action"] == "stop_recording":
+                                    asyncio.create_task(_execute_stop_recording(ws, history=history))
+                                elif embedded_action["action"] == "switch_scene":
+                                    asyncio.create_task(_execute_switch_scene(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "list_scenes":
+                                    asyncio.create_task(_execute_list_scenes(ws, history=history))
+                                elif embedded_action["action"] == "toggle_mic":
+                                    asyncio.create_task(_execute_toggle_mic(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
