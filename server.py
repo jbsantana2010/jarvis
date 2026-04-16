@@ -72,6 +72,10 @@ try:
 except Exception as _rem_err:
     log.warning(f"reminders startup failed (non-fatal): {_rem_err}")
 
+# Tracks the most recently fired reminder so "snooze that" works without
+# the user specifying which reminder to snooze.
+_last_triggered_reminder: dict | None = None
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -128,7 +132,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN remember facts about {user_name} — preferences, decisions, goals. Use [ACTION:REMEMBER] to store important info.
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
 - You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
-- You CAN create and manage reminders — set timed reminders for anything and list pending ones. Use [ACTION:SET_REMINDER] and [ACTION:LIST_REMINDERS].
+- You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
 
 NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
 - Apple Calendar, Apple Notes — not available, do NOT pretend to read them
@@ -228,6 +232,16 @@ When you decide the user needs something DONE (not just discussed), include an a
   "remind me at 6 PM to start stream prep" → [ACTION:SET_REMINDER] at 6 PM ||| start stream prep
   "remind me tomorrow at 9 AM to review Jarvis" → [ACTION:SET_REMINDER] tomorrow at 9 AM ||| review Jarvis
 - [ACTION:LIST_REMINDERS] — list all pending reminders. Use when user says "what reminders do I have", "show my reminders", "any reminders?", "list reminders", etc.
+- [ACTION:CANCEL_REMINDER] <query> — cancel the best-matching pending reminder. query fuzzy-matches the reminder message. Empty query cancels the most recently set one.
+  "cancel my stretch reminder" → [ACTION:CANCEL_REMINDER] stretch
+  "cancel that reminder" → [ACTION:CANCEL_REMINDER]
+- [ACTION:SNOOZE_REMINDER] <duration> or <query> ||| <duration> — snooze a reminder by the given duration.
+  "snooze that for 10 minutes" → [ACTION:SNOOZE_REMINDER] 10 minutes
+  "remind me about stretch again in 5 min" → [ACTION:SNOOZE_REMINDER] stretch ||| 5 minutes
+  Recurring: prefix time with "every day", "every weekday", or "every <weekday>":
+  "remind me every day at 8 AM to check email" → [ACTION:SET_REMINDER] every day at 8 AM ||| check email
+  "remind me every weekday at 9 AM for standup" → [ACTION:SET_REMINDER] every weekday at 9 AM ||| standup
+  "remind me every monday at 6 PM for team meeting" → [ACTION:SET_REMINDER] every monday at 6 PM ||| team meeting
   "what's the weather?" → [ACTION:WEATHER]
   "weather in Miami" → [ACTION:WEATHER] Miami
   "what's it like in Tokyo?" → [ACTION:WEATHER] Tokyo
@@ -785,7 +799,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|SET_REMINDER|LIST_REMINDERS)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1220,7 +1234,7 @@ async def _execute_set_reminder(target: str, ws=None, history=None) -> str:
     """Create a reminder from [ACTION:SET_REMINDER] target.
 
     Target format: "<time_expression> ||| <message>"
-    Example: "in 10 minutes ||| stretch"
+    Supports recurrence prefix: "every day at 8 AM ||| check email"
     """
     from datetime import datetime as _dt
     if "|||" not in target:
@@ -1229,11 +1243,17 @@ async def _execute_set_reminder(target: str, ws=None, history=None) -> str:
         time_expr, _, reminder_msg = target.partition("|||")
         time_expr    = time_expr.strip()
         reminder_msg = reminder_msg.strip()
-        dt = reminders.parse_time(time_expr)
+        # Check for recurrence prefix before parsing the time
+        rec_type, rec_value, bare_time_expr = reminders.parse_recurrence(time_expr)
+        dt = reminders.parse_time(bare_time_expr)
         if not dt:
             msg = f"I'm afraid I couldn't parse '{time_expr}' as a time, sir."
         else:
-            rid = reminders.add_reminder(reminder_msg, dt.timestamp())
+            rid = reminders.add_reminder(
+                reminder_msg, dt.timestamp(),
+                recurrence_type=rec_type,
+                recurrence_value=rec_value,
+            )
             now = _dt.now()
             delta_mins = int((dt - now).total_seconds() / 60)
             if delta_mins < 60:
@@ -1243,8 +1263,17 @@ async def _execute_set_reminder(target: str, ws=None, history=None) -> str:
                 when_str = f"in {hrs} hour{'s' if hrs != 1.0 else ''}"
             else:
                 when_str = dt.strftime("%A at %-I:%M %p")
-            msg = f"Done, sir. I'll remind you to {reminder_msg} {when_str}."
-            log.info(f"Reminder created (id={rid}): '{reminder_msg}' at {dt}")
+            if rec_type == "daily":
+                rec_note = ", and then every day after that"
+            elif rec_type == "weekdays":
+                rec_note = ", and then every weekday"
+            elif rec_type == "weekly":
+                day = (rec_value or "").title()
+                rec_note = f", and then every {day}"
+            else:
+                rec_note = ""
+            msg = f"Done, sir. I'll remind you to {reminder_msg} {when_str}{rec_note}."
+            log.info(f"Reminder created (id={rid}): '{reminder_msg}' at {dt} recurrence={rec_type}")
     if ws:
         try:
             audio = await synthesize_speech(msg)
@@ -1275,6 +1304,76 @@ async def _execute_list_reminders(ws=None, history=None) -> str:
     return msg
 
 
+async def _execute_cancel_reminder(target: str, ws=None, history=None) -> str:
+    """Cancel the best-matching pending reminder ([ACTION:CANCEL_REMINDER])."""
+    cancelled = reminders.cancel_reminder(target.strip())
+    if cancelled:
+        msg = f"Done, sir. I've cancelled the reminder for {cancelled['message']}."
+    else:
+        msg = "I couldn't find any pending reminders to cancel, sir."
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_cancel_reminder ws send failed: {e}")
+    return msg
+
+
+async def _execute_snooze_reminder(target: str, ws=None, history=None) -> str:
+    """Snooze a reminder ([ACTION:SNOOZE_REMINDER]).
+
+    target: "<duration>"  or  "<message_query> ||| <duration>"
+    """
+    global _last_triggered_reminder
+    from datetime import datetime as _dt
+
+    if "|||" in target:
+        query_part, _, duration_part = target.partition("|||")
+        reminder = reminders.find_reminder(query_part.strip())
+        duration_part = duration_part.strip()
+    else:
+        duration_part = target.strip()
+        reminder = _last_triggered_reminder or reminders.find_reminder("")
+
+    delta = reminders.parse_snooze_duration(duration_part)
+
+    if not reminder:
+        msg = "I couldn't find a reminder to snooze, sir."
+    elif delta is None:
+        msg = f"I'm afraid I couldn't parse '{duration_part}' as a duration, sir."
+    else:
+        updated = reminders.snooze_reminder(reminder["id"], delta)
+        if updated:
+            mins = int(delta / 60)
+            if mins < 1:
+                when_str = f"in {int(delta)} seconds"
+            elif mins < 60:
+                when_str = f"in {mins} minute{'s' if mins != 1 else ''}"
+            else:
+                hrs = round(delta / 3600, 1)
+                when_str = f"in {hrs} hour{'s' if hrs != 1.0 else ''}"
+            msg = f"Alright, sir. I'll remind you about {updated['message']} again {when_str}."
+        else:
+            msg = "I had trouble snoozing that reminder, sir."
+
+    if ws:
+        try:
+            audio = await synthesize_speech(msg)
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning(f"_execute_snooze_reminder ws send failed: {e}")
+    return msg
+
+
 async def _reminder_scheduler_loop():
     """Background loop: checks for due reminders every 30 seconds.
 
@@ -1290,7 +1389,14 @@ async def _reminder_scheduler_loop():
             due = reminders.get_due()
             for r in due:
                 log.info(f"Reminder firing: {r['message']}")
-                reminders.mark_done(r["id"])  # mark first — never double-fire
+                # Mark/reschedule FIRST — never double-fire
+                if r.get("recurrence_type"):
+                    reminders.reschedule_recurring(r)  # keep pending at next time
+                else:
+                    reminders.mark_done(r["id"])
+                # Track for "snooze that" support
+                global _last_triggered_reminder
+                _last_triggered_reminder = r
                 asyncio.create_task(
                     platform_adapter.notify_windows("JARVIS Reminder", r["message"])
                 )
@@ -1991,6 +2097,25 @@ def detect_action_fast(text: str) -> dict | None:
     ]):
         return {"action": "list_reminders"}
 
+    # Reminder — cancel fast path
+    if any(p in t for p in [
+        "cancel my reminder", "cancel that reminder", "cancel the reminder",
+        "remove that reminder", "remove my reminder", "delete that reminder",
+        "delete my reminder",
+    ]):
+        m_cancel = re.search(r'(?:about|for)\s+(.+)$', t)
+        query = m_cancel.group(1).strip() if m_cancel else ""
+        return {"action": "cancel_reminder", "target": query}
+
+    # Reminder — snooze fast path
+    if any(p in t for p in [
+        "snooze that", "snooze it", "snooze the reminder",
+        "remind me again", "remind me later",
+    ]):
+        m_snooze = re.search(r'(?:for|in)\s+(\d+\s+(?:second|minute|min|hour|hr)\w*)', t)
+        duration = m_snooze.group(1).strip() if m_snooze else "10 minutes"
+        return {"action": "snooze_reminder", "target": duration}
+
     # Terminal / Claude Code — explicit open requests
     if any(w in t for w in ["open claude", "start claude", "launch claude", "run claude"]):
         return {"action": "open_terminal"}
@@ -2634,6 +2759,12 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "list_reminders":
                             response_text = "Checking your reminders, sir."
                             asyncio.create_task(_execute_list_reminders(ws, history=history))
+                        elif _work_fast["action"] == "cancel_reminder":
+                            response_text = "Cancelling that reminder, sir."
+                            asyncio.create_task(_execute_cancel_reminder(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "snooze_reminder":
+                            response_text = "Snoozing that, sir."
+                            asyncio.create_task(_execute_snooze_reminder(_work_fast.get("target", "10 minutes"), ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -2758,6 +2889,12 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "list_reminders":
                             response_text = "Checking your reminders, sir."
                             asyncio.create_task(_execute_list_reminders(ws, history=history))
+                        elif action["action"] == "cancel_reminder":
+                            response_text = "Cancelling that reminder, sir."
+                            asyncio.create_task(_execute_cancel_reminder(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "snooze_reminder":
+                            response_text = "Snoozing that, sir."
+                            asyncio.create_task(_execute_snooze_reminder(action.get("target", "10 minutes"), ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -2918,6 +3055,10 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_set_reminder(embedded_action["target"], ws, history=history))
                                 elif embedded_action["action"] == "list_reminders":
                                     asyncio.create_task(_execute_list_reminders(ws, history=history))
+                                elif embedded_action["action"] == "cancel_reminder":
+                                    asyncio.create_task(_execute_cancel_reminder(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "snooze_reminder":
+                                    asyncio.create_task(_execute_snooze_reminder(embedded_action.get("target", "10 minutes"), ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
