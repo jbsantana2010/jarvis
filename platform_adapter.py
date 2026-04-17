@@ -613,8 +613,15 @@ async def _launch_windows_app(executable: str, display_name: str) -> tuple[bool,
             cmd = ["powershell.exe", "-NoProfile", "-Command",
                    f"Start-Process '{executable}'"]
         else:
-            cmd = ["powershell.exe", "-NoProfile", "-Command",
-                   f"Start-Process '{executable}'"]
+            # For full-path exes, set WorkingDirectory to the exe's own folder
+            # so apps like OBS can find their locale/data files relative to themselves
+            win_dir = executable.replace("/", "\\").rsplit("\\", 1)[0] if "\\" in executable else ""
+            if win_dir:
+                cmd = ["powershell.exe", "-NoProfile", "-Command",
+                       f"Start-Process '{executable}' -WorkingDirectory '{win_dir}'"]
+            else:
+                cmd = ["powershell.exe", "-NoProfile", "-Command",
+                       f"Start-Process '{executable}'"]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

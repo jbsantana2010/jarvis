@@ -58,6 +58,7 @@ def _check_deps() -> bool:
 # ---------------------------------------------------------------------------
 
 _HERE = Path(__file__).parent  # always the jarvis project folder
+_OAUTH_PORT = 9877              # fixed port for OAuth local redirect server
 
 
 def _creds_path() -> Path:
@@ -87,6 +88,63 @@ class EmailMessage:
 # Auth + service builder (synchronous — called via run_in_executor)
 # ---------------------------------------------------------------------------
 
+def needs_oauth() -> bool:
+    """True if an OAuth browser flow is required (no token, or token invalid/expired)."""
+    tp = _token_path()
+    if not tp.exists():
+        return True
+    if not _check_deps():
+        return False  # can't check, assume ok and let _build_service_sync handle it
+    try:
+        from google.oauth2.credentials import Credentials
+        creds = Credentials.from_authorized_user_file(str(tp), SCOPES)
+        # Valid and not expired → no OAuth needed
+        if creds and creds.valid:
+            return False
+        # Expired but refreshable → no browser needed, refresh inline
+        if creds and creds.expired and creds.refresh_token:
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def trigger_oauth_background() -> None:
+    """Open Windows browser for OAuth and save token.json when done.
+
+    Returns immediately — auth runs in a daemon thread. The voice loop is
+    never blocked. Next call to fetch_recent_emails() will find the token.
+    """
+    import threading
+    import subprocess as _sp
+    import platform as _plat
+
+    def _auth_thread():
+        try:
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            flow = InstalledAppFlow.from_client_secrets_file(str(_creds_path()), SCOPES)
+            # Pre-set redirect_uri to our fixed port so we know the URL before starting
+            flow.redirect_uri = f"http://localhost:{_OAUTH_PORT}/"
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+
+            # Open in Windows browser (works from WSL via PowerShell)
+            _sp.run(
+                ["powershell.exe", "Start-Process", auth_url],
+                check=False, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            )
+            log.info("Gmail OAuth: browser opened, waiting for user approval…")
+
+            # Wait for OAuth redirect (blocks this thread only, not the voice loop)
+            creds = flow.run_local_server(port=_OAUTH_PORT, open_browser=False)
+            _token_path().write_text(creds.to_json())
+            log.info("Gmail OAuth complete — token saved to %s", _token_path())
+        except Exception as e:
+            log.warning("Gmail OAuth background thread failed: %s", e)
+
+    t = threading.Thread(target=_auth_thread, daemon=True, name="gmail-oauth")
+    t.start()
+
+
 def _build_service_sync():
     """Build an authenticated Gmail API service. Raises descriptively on any failure."""
     if not _check_deps():
@@ -97,7 +155,6 @@ def _build_service_sync():
         )
 
     from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
 
@@ -122,42 +179,19 @@ def _build_service_sync():
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
+                tp.write_text(creds.to_json())
+                log.info("Gmail token refreshed")
             except Exception as e:
                 tp.unlink(missing_ok=True)
                 raise RuntimeError(
                     f"Gmail token expired and refresh failed: {e}. "
-                    "Delete token.json and re-authenticate."
+                    "Say 'check my email' again to re-authenticate."
                 ) from e
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(cp), SCOPES)
-            # WSL: gio/xdg-open can't launch Windows browser — patch webbrowser
-            # to use PowerShell so the OAuth URL opens in Windows Chrome/Edge.
-            # The local redirect server (localhost:PORT) is reachable from Windows
-            # via WSL2 automatic port forwarding.
-            import webbrowser as _wb
-            import subprocess as _sp
-            import platform as _plat
-            _is_wsl = "microsoft" in _plat.uname().release.lower()
-            if _is_wsl:
-                _orig_open = _wb.open
-                def _powershell_open(url, new=0, autoraise=True):
-                    try:
-                        _sp.run(
-                            ["powershell.exe", "Start-Process", url],
-                            check=False, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-                        )
-                        return True
-                    except Exception:
-                        return _orig_open(url, new, autoraise)
-                _wb.open = _powershell_open
-            try:
-                creds = flow.run_local_server(port=0)
-            finally:
-                if _is_wsl:
-                    _wb.open = _orig_open
-
-        tp.write_text(creds.to_json())
-        log.info("Gmail token saved → %s", tp)
+            # Should not reach here if callers check needs_oauth() first
+            raise RuntimeError(
+                "Gmail token missing or invalid. Say 'check my email' to authenticate."
+            )
 
     return build("gmail", "v1", credentials=creds)
 

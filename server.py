@@ -1156,8 +1156,15 @@ async def _execute_read_mail(ws=None, history=None):
     if not mail_gmail.is_configured():
         msg = (
             "Gmail isn't configured yet, sir. "
-            "Download credentials.json from Google Cloud Console, "
-            "place it in the project folder, and I'll handle authentication on first use."
+            "Download credentials.json from Google Cloud Console "
+            "and place it in the project folder."
+        )
+    elif mail_gmail.needs_oauth():
+        # Open browser in background — never block the voice loop
+        mail_gmail.trigger_oauth_background()
+        msg = (
+            "I've opened a browser for Gmail sign-in, sir. "
+            "Once you approve access, just ask me to check your email again."
         )
     else:
         try:
@@ -1192,6 +1199,12 @@ async def _execute_summarize_mail(ws=None, history=None):
         msg = (
             "Gmail isn't configured yet, sir. "
             "Place credentials.json in the project folder to get started."
+        )
+    elif mail_gmail.needs_oauth():
+        mail_gmail.trigger_oauth_background()
+        msg = (
+            "I've opened a browser for Gmail sign-in, sir. "
+            "Once you approve access, ask me to summarize your inbox again."
         )
     else:
         try:
@@ -2472,17 +2485,18 @@ async def _do_calendar_lookup() -> str:
 async def _do_mail_lookup() -> str:
     """Fetch Gmail inbox — used by _lookup_and_report to update cache and speak result."""
     if not mail_gmail.is_configured():
+        return "Gmail credentials not found, sir. Place credentials.json in the project folder."
+    if mail_gmail.needs_oauth():
+        mail_gmail.trigger_oauth_background()
         return (
-            "Gmail isn't configured yet, sir. "
-            "Place credentials.json in the project folder and I can authenticate on first use."
+            "I've opened a browser for Gmail sign-in, sir. "
+            "Once you approve access, ask me to check your email again."
         )
     try:
         emails = await mail_gmail.fetch_recent_emails(max_results=8)
         result = mail_gmail.format_for_voice(emails)
         _ctx_cache["mail"] = result
         return result
-    except FileNotFoundError as e:
-        return f"Gmail credentials not found, sir — {mail_gmail.friendly_error(e)}."
     except asyncio.TimeoutError:
         return "Gmail request timed out, sir. Check your connection."
     except Exception as e:
