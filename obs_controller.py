@@ -19,6 +19,11 @@ from typing import Any
 
 log = logging.getLogger("jarvis.obs")
 
+# obsws_python prints the full connection traceback at WARNING level on every
+# failed attempt — suppress it so the JARVIS log stays readable.
+logging.getLogger("obsws_python").setLevel(logging.ERROR)
+logging.getLogger("obsws_python.baseclient.ObsClient").setLevel(logging.ERROR)
+
 # ---------------------------------------------------------------------------
 # Config -- read once at import time (env already loaded by server.py)
 # ---------------------------------------------------------------------------

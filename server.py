@@ -1350,7 +1350,11 @@ async def _execute_obs_status(ws=None, history=None) -> str:
     """Report OBS stream/recording/scene status."""
     status = await obs_controller.get_status()
     if status is None:
-        msg = "OBS doesn't appear to be running, sir."
+        msg = (
+            "Can't reach OBS, sir — WebSocket isn't responding. "
+            "If OBS just launched, give it a few seconds then try again. "
+            "Otherwise check that WebSocket is enabled under Tools → WebSocket Server Settings."
+        )
     else:
         msg = obs_controller.format_status(status)
     await _obs_speak(msg, ws)

@@ -127,9 +127,12 @@ def trigger_oauth_background() -> None:
             flow.redirect_uri = f"http://localhost:{_OAUTH_PORT}/"
             auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
 
-            # Open in Windows browser (works from WSL via PowerShell)
+            # Open in Windows browser via PowerShell.
+            # URL must be single-quoted in the -Command string — passing it as
+            # a bare argument lets PowerShell interpret & as a statement separator.
+            safe_url = auth_url.replace("'", "")  # strip any stray single quotes
             _sp.run(
-                ["powershell.exe", "Start-Process", auth_url],
+                ["powershell.exe", "-NoProfile", "-Command", f"Start-Process '{safe_url}'"],
                 check=False, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
             )
             log.info("Gmail OAuth: browser opened, waiting for user approval…")
