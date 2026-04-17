@@ -2271,6 +2271,12 @@ def detect_action_fast(text: str) -> dict | None:
                              "what's open", "whats open", "what apps are open"]):
         return {"action": "describe_screen"}
 
+    # Work mode — explicit start requests
+    if any(p in t for p in ["start work mode", "enter work mode", "work mode",
+                             "begin work mode", "activate work mode",
+                             "start working", "go to work mode"]):
+        return {"action": "start_work_mode"}
+
     # Calendar — explicit schedule requests
     if any(p in t for p in ["what's my schedule", "whats my schedule", "what's on my calendar",
                              "whats on my calendar", "do i have any meetings", "any meetings",
@@ -2869,7 +2875,7 @@ async def voice_handler(ws: WebSocket):
                     elif _work_fast and _work_fast["action"] in (
                             "take_screenshot", "open_app", "open_terminal", "describe_screen",
                             "browse", "read_clipboard", "write_clipboard",
-                            "check_mail", "summarize_mail", "list_reminders"):
+                            "check_mail", "summarize_mail", "list_reminders", "start_work_mode"):
                         if _work_fast["action"] == "take_screenshot":
                             response_text = "Taking a screenshot now, sir."
                             asyncio.create_task(_take_and_report_screenshot(ws, history=history, voice_state=voice_state))
@@ -2891,6 +2897,8 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "write_clipboard":
                             response_text = "Copying that, sir."
                             asyncio.create_task(_execute_write_clipboard(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "start_work_mode":
+                            response_text = "Already in work mode, sir. What shall I work on?"
                         elif _work_fast["action"] == "check_mail":
                             response_text = "Checking your inbox, sir."
                             asyncio.create_task(_execute_read_mail(ws, history=history))
@@ -3006,6 +3014,11 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "check_calendar":
                             response_text = "Checking your calendar now, sir."
                             asyncio.create_task(_lookup_and_report("calendar", _do_calendar_lookup, ws, history=history, voice_state=voice_state))
+                        elif action["action"] == "start_work_mode":
+                            if work_session.active:
+                                response_text = "Already in work mode, sir. What shall I work on?"
+                            else:
+                                response_text = "Ready to work, sir. Which project shall we focus on?"
                         elif action["action"] == "check_mail":
                             response_text = "Checking your inbox now, sir."
                             asyncio.create_task(_execute_read_mail(ws, history=history))

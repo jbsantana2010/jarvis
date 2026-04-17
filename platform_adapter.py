@@ -17,6 +17,7 @@ Adding a Windows replacement:
 
 import asyncio
 import base64
+import os
 import platform
 import logging
 from pathlib import Path
@@ -567,6 +568,10 @@ _WIN_APP_REGISTRY: dict[str, str] = {
     "excel":                "excel.exe",
     "powerpoint":           "powerpnt.exe",
     "outlook":              "outlook.exe",
+    # Streaming / recording — full path since OBS isn't in Windows PATH
+    "obs":                  r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
+    "obs studio":           r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
+    "open broadcaster":     r"C:\Program Files\obs-studio\bin\64bit\obs64.exe",
 }
 
 

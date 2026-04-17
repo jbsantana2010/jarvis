@@ -57,12 +57,17 @@ def _check_deps() -> bool:
 # Config paths (overridable via .env)
 # ---------------------------------------------------------------------------
 
+_HERE = Path(__file__).parent  # always the jarvis project folder
+
+
 def _creds_path() -> Path:
-    return Path(os.getenv("GMAIL_CREDENTIALS_PATH", "./credentials.json"))
+    env = os.getenv("GMAIL_CREDENTIALS_PATH", "")
+    return Path(env) if env else _HERE / "credentials.json"
 
 
 def _token_path() -> Path:
-    return Path(os.getenv("GMAIL_TOKEN_PATH", "./token.json"))
+    env = os.getenv("GMAIL_TOKEN_PATH", "")
+    return Path(env) if env else _HERE / "token.json"
 
 
 # ---------------------------------------------------------------------------
