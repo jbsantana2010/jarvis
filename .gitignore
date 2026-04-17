@@ -22,6 +22,10 @@ data/.jarvis_output.txt
 # Certificates
 *.pem
 
+# Gmail OAuth — never commit these
+credentials.json
+token.json
+
 # Build
 dist/
 .vite/

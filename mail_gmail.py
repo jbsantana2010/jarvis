@@ -129,9 +129,32 @@ def _build_service_sync():
                     "Delete token.json and re-authenticate."
                 ) from e
         else:
-            # This opens a browser window for OAuth consent
             flow = InstalledAppFlow.from_client_secrets_file(str(cp), SCOPES)
-            creds = flow.run_local_server(port=0)
+            # WSL: gio/xdg-open can't launch Windows browser — patch webbrowser
+            # to use PowerShell so the OAuth URL opens in Windows Chrome/Edge.
+            # The local redirect server (localhost:PORT) is reachable from Windows
+            # via WSL2 automatic port forwarding.
+            import webbrowser as _wb
+            import subprocess as _sp
+            import platform as _plat
+            _is_wsl = "microsoft" in _plat.uname().release.lower()
+            if _is_wsl:
+                _orig_open = _wb.open
+                def _powershell_open(url, new=0, autoraise=True):
+                    try:
+                        _sp.run(
+                            ["powershell.exe", "Start-Process", url],
+                            check=False, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                        )
+                        return True
+                    except Exception:
+                        return _orig_open(url, new, autoraise)
+                _wb.open = _powershell_open
+            try:
+                creds = flow.run_local_server(port=0)
+            finally:
+                if _is_wsl:
+                    _wb.open = _orig_open
 
         tp.write_text(creds.to_json())
         log.info("Gmail token saved → %s", tp)
