@@ -169,7 +169,12 @@ def trigger_oauth_background() -> None:
             if not auth_response:
                 raise RuntimeError("OAuth callback received no auth code — did the browser complete the flow?")
 
+            # oauthlib rejects http:// redirect URIs by default.
+            # Our callback is local-only; the actual token exchange with Google is HTTPS.
+            import os as _os
+            _os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
             flow.fetch_token(authorization_response=auth_response)
+            _os.environ.pop("OAUTHLIB_INSECURE_TRANSPORT", None)  # clean up immediately
             creds = flow.credentials
             _token_path().write_text(creds.to_json())
             log.info("Gmail OAuth complete — token saved to %s", _token_path())
