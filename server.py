@@ -2134,7 +2134,7 @@ def detect_action_fast(text: str) -> dict | None:
     )
     for _cp in _CLIP_WRITE_PREFIXES:
         if t.startswith(_cp):
-            _clip_text = user_text[len(_cp):].strip()
+            _clip_text = text[len(_cp):].strip()
             if _clip_text:
                 return {"action": "write_clipboard", "target": _clip_text}
             break
@@ -2150,7 +2150,7 @@ def detect_action_fast(text: str) -> dict | None:
     )
     for _sp in _SEARCH_PREFIXES:
         if t.startswith(_sp):
-            _query = user_text[len(_sp):].strip()
+            _query = text[len(_sp):].strip()
             if _query:
                 return {"action": "browse", "target": _query}
             break
@@ -2271,10 +2271,10 @@ def detect_action_fast(text: str) -> dict | None:
                              "what's open", "whats open", "what apps are open"]):
         return {"action": "describe_screen"}
 
-    # Work mode — explicit start requests
-    if any(p in t for p in ["start work mode", "enter work mode", "work mode",
-                             "begin work mode", "activate work mode",
-                             "start working", "go to work mode"]):
+    # Work mode — explicit start requests (careful not to match "stop/quit work mode")
+    if any(t == p or t.startswith(p) for p in ["start work mode", "enter work mode",
+                                                "begin work mode", "activate work mode",
+                                                "go to work mode", "go into work mode"]):
         return {"action": "start_work_mode"}
 
     # Calendar — explicit schedule requests
