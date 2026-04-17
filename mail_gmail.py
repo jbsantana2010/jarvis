@@ -137,8 +137,40 @@ def trigger_oauth_background() -> None:
             )
             log.info("Gmail OAuth: browser opened, waiting for user approval…")
 
-            # Wait for OAuth redirect (blocks this thread only, not the voice loop)
-            creds = flow.run_local_server(port=_OAUTH_PORT, open_browser=False)
+            # Custom WSGI callback server bound to 0.0.0.0 so the Windows
+            # browser can reach it across the WSL2 network boundary.
+            # (run_local_server() always binds to 127.0.0.1 — unreachable from Windows)
+            import wsgiref.simple_server
+            import wsgiref.util
+
+            captured: dict = {}
+
+            def _wsgi_app(environ, start_response):
+                qs = environ.get("QUERY_STRING", "")
+                if "code=" in qs:
+                    # Build the full redirect URI but swap 0.0.0.0 → localhost
+                    # so Google's token endpoint accepts it (redirect_uri must match)
+                    raw_uri = wsgiref.util.request_uri(environ)
+                    captured["auth_response"] = raw_uri.replace(
+                        f"http://0.0.0.0:{_OAUTH_PORT}",
+                        f"http://localhost:{_OAUTH_PORT}",
+                        1,
+                    )
+                start_response("200 OK", [("Content-Type", "text/html")])
+                return [b"<html><body><h2>Authentication complete.</h2>"
+                        b"<p>You can close this tab and return to JARVIS.</p>"
+                        b"</body></html>"]
+
+            server = wsgiref.simple_server.make_server("0.0.0.0", _OAUTH_PORT, _wsgi_app)
+            server.handle_request()   # blocks until one request arrives (the OAuth redirect)
+            server.server_close()
+
+            auth_response = captured.get("auth_response", "")
+            if not auth_response:
+                raise RuntimeError("OAuth callback received no auth code — did the browser complete the flow?")
+
+            flow.fetch_token(authorization_response=auth_response)
+            creds = flow.credentials
             _token_path().write_text(creds.to_json())
             log.info("Gmail OAuth complete — token saved to %s", _token_path())
         except Exception as e:

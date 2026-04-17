@@ -21,14 +21,52 @@ log = logging.getLogger("jarvis.obs")
 
 # obsws_python prints the full connection traceback at WARNING level on every
 # failed attempt — suppress it so the JARVIS log stays readable.
-logging.getLogger("obsws_python").setLevel(logging.ERROR)
-logging.getLogger("obsws_python.baseclient.ObsClient").setLevel(logging.ERROR)
+for _lg in (
+    "obsws_python",
+    "obsws_python.baseclient.ObsClient",
+    "websocket",
+    "websocket-client",
+):
+    _l = logging.getLogger(_lg)
+    _l.setLevel(logging.CRITICAL)
+    _l.disabled = True
+
+
+# ---------------------------------------------------------------------------
+# WSL2 host detection
+# ---------------------------------------------------------------------------
+
+def _get_windows_host_ip() -> str:
+    """Return the Windows host IP when running inside WSL2.
+
+    Under WSL2 the Windows host is reachable at the nameserver address
+    listed in /etc/resolv.conf (typically 10.255.255.254).
+    Falls back to 'localhost' on any error.
+    """
+    try:
+        import subprocess as _sp2
+        r = _sp2.run(
+            ["bash", "-c", "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"],
+            capture_output=True, text=True, timeout=3,
+        )
+        ip = r.stdout.strip()
+        return ip if ip else "localhost"
+    except Exception:
+        return "localhost"
+
+
+import platform as _plat
+_is_wsl = "microsoft" in _plat.uname().release.lower()
 
 # ---------------------------------------------------------------------------
 # Config -- read once at import time (env already loaded by server.py)
 # ---------------------------------------------------------------------------
 
-OBS_HOST     = "localhost"
+OBS_HOST = (
+    _get_windows_host_ip()
+    if _is_wsl
+    else os.getenv("OBS_WEBSOCKET_HOST", "localhost")
+)
 OBS_PORT     = int(os.getenv("OBS_WEBSOCKET_PORT", "4455"))
 OBS_PASSWORD = os.getenv("OBS_WEBSOCKET_PASSWORD", "")
 CONNECT_TIMEOUT = 3  # seconds -- keeps commands snappy even when OBS is closed
