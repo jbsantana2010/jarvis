@@ -57,6 +57,7 @@ import reminders
 import conversation_db
 import mail_gmail
 import calendar_google
+import briefing
 import obs_controller
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -135,6 +136,9 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
 - You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
 - You CAN read Google Calendar — use [ACTION:READ_CALENDAR] with a range (today/tomorrow/this_afternoon/this_week) to list events. Use [ACTION:NEXT_EVENT] for the next upcoming event.
+- You CAN give a full morning briefing combining calendar, reminders, and Gmail — use [ACTION:MORNING_BRIEFING]. Use when user says "give me my morning briefing", "brief me on my day", "morning briefing", etc.
+- You CAN tell the user what's coming up next (next event or reminder) — use [ACTION:WHATS_NEXT]. Use when user says "what's next", "what do I have next", "what's coming up", etc.
+- You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
 - You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
 
@@ -231,6 +235,9 @@ When you decide the user needs something DONE (not just discussed), include an a
 - [ACTION:WRITE_CLIPBOARD] text — write the given text to the clipboard. Use when user says "copy X to clipboard", "put that in my clipboard", "write this to clipboard: ...", etc. Put the exact text to copy as the action target.
 - [ACTION:READ_MAIL] — fetch and speak recent Gmail messages (sender, subject, unread status). Use when user says "check my email", "what emails do I have", "any new mail", "read my email", "latest emails", "what's in my inbox", etc.
 - [ACTION:SUMMARIZE_MAIL] — use AI to summarize Gmail inbox and highlight what matters. Use when user says "summarize my inbox", "any important emails", "what should I know about my email", "inbox summary", "any urgent emails", etc.
+- [ACTION:MORNING_BRIEFING] — full spoken briefing: greeting + today's calendar + reminders due today + Gmail unread summary. Use for "morning briefing", "brief me on my day", "start my day", etc.
+- [ACTION:WHATS_NEXT] — the single next item from calendar or reminders, whichever is sooner. Use for "what's next", "what do I have next", "what's coming up".
+- [ACTION:DAILY_OVERVIEW] — practical "what to focus on today" combining calendar + reminders + inbox. Use for "what's on my plate", "what should I focus on", "daily overview".
 - [ACTION:READ_CALENDAR] range — read Google Calendar for the given range. Range values: today (default), tomorrow, this_afternoon, this_evening, this_week. Use when user asks about schedule, meetings, or calendar.
   "what's on my calendar today?" → [ACTION:READ_CALENDAR] today
   "do I have anything tomorrow?" → [ACTION:READ_CALENDAR] tomorrow
@@ -817,7 +824,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1278,6 +1285,42 @@ async def _execute_read_calendar(range_str: str = "today", ws=None, history=None
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception as e:
             log.warning("_execute_read_calendar ws send failed: %s", e)
+
+
+async def _speak_result(msg: str, label: str, ws, history):
+    """Shared speak-and-cache helper for briefing executors."""
+    log.info("%s result: %s", label, msg[:100])
+    if history is not None:
+        history.append({"role": "assistant", "content": f"[{label}]: {msg}"})
+    if ws:
+        try:
+            audio = await synthesize_speech(strip_markdown_for_tts(msg))
+            await ws.send_json({"type": "status", "state": "speaking"})
+            if audio:
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": msg})
+            else:
+                await ws.send_json({"type": "text", "text": msg})
+            await ws.send_json({"type": "status", "state": "idle"})
+        except Exception as e:
+            log.warning("%s ws send failed: %s", label, e)
+
+
+async def _execute_morning_briefing(ws=None, history=None):
+    """Gather calendar + reminders + mail and speak a morning briefing."""
+    msg = await briefing.build_morning_briefing(anthropic_client)
+    await _speak_result(msg, "morning_briefing", ws, history)
+
+
+async def _execute_whats_next(ws=None, history=None):
+    """Return the single next calendar event or reminder."""
+    msg = await briefing.build_whats_next()
+    await _speak_result(msg, "whats_next", ws, history)
+
+
+async def _execute_daily_overview(ws=None, history=None):
+    """Combine calendar + reminders + mail into a daily focus summary."""
+    msg = await briefing.build_daily_overview(anthropic_client)
+    await _speak_result(msg, "daily_overview", ws, history)
 
 
 async def _execute_set_reminder(target: str, ws=None, history=None) -> str:
@@ -2321,6 +2364,33 @@ def detect_action_fast(text: str) -> dict | None:
                                                 "go to work mode", "go into work mode"]):
         return {"action": "start_work_mode"}
 
+    # Morning briefing fast path
+    if any(p in t for p in [
+        "morning briefing", "give me my morning briefing", "brief me on my day",
+        "brief me", "daily briefing", "start my day", "good morning jarvis",
+        "morning update", "morning rundown",
+    ]):
+        return {"action": "morning_briefing"}
+
+    # What's next fast path
+    if any(p in t for p in [
+        "what's next", "whats next", "what do i have next",
+        "what's coming up", "whats coming up", "what's coming up next",
+        "whats coming up next", "what's up next", "whats up next",
+        "what's after this", "whats after this",
+    ]):
+        return {"action": "whats_next"}
+
+    # Daily overview fast path
+    if any(p in t for p in [
+        "what should i focus on today", "what's on my plate today",
+        "whats on my plate today", "what does my day look like",
+        "how does my day look", "how's my day looking", "hows my day looking",
+        "daily overview", "overview of my day", "what's my day look like",
+        "whats my day look like", "what do i have on today",
+    ]):
+        return {"action": "daily_overview"}
+
     # Calendar — next event fast path (check before generic "today" path)
     if any(p in t for p in [
         "what's my next meeting", "whats my next meeting", "next meeting",
@@ -2972,6 +3042,7 @@ async def voice_handler(ws: WebSocket):
                             "browse", "read_clipboard", "write_clipboard",
                             "check_mail", "summarize_mail",
                             "check_calendar", "read_calendar", "next_event",
+                            "morning_briefing", "whats_next", "daily_overview",
                             "list_reminders", "start_work_mode"):
                         if _work_fast["action"] == "take_screenshot":
                             response_text = "Taking a screenshot now, sir."
@@ -3012,6 +3083,15 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "next_event":
                             response_text = "Checking your next event, sir."
                             asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                        elif _work_fast["action"] == "morning_briefing":
+                            response_text = "One moment, sir."
+                            asyncio.create_task(_execute_morning_briefing(ws, history=history))
+                        elif _work_fast["action"] == "whats_next":
+                            response_text = "Let me check, sir."
+                            asyncio.create_task(_execute_whats_next(ws, history=history))
+                        elif _work_fast["action"] == "daily_overview":
+                            response_text = "Here's your day, sir."
+                            asyncio.create_task(_execute_daily_overview(ws, history=history))
                         elif _work_fast["action"] == "list_reminders":
                             response_text = "Checking your reminders, sir."
                             asyncio.create_task(_execute_list_reminders(ws, history=history))
@@ -3128,6 +3208,15 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "next_event":
                             response_text = "Let me check what's coming up, sir."
                             asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                        elif action["action"] == "morning_briefing":
+                            response_text = "One moment, sir."
+                            asyncio.create_task(_execute_morning_briefing(ws, history=history))
+                        elif action["action"] == "whats_next":
+                            response_text = "Let me check, sir."
+                            asyncio.create_task(_execute_whats_next(ws, history=history))
+                        elif action["action"] == "daily_overview":
+                            response_text = "Here's your day, sir."
+                            asyncio.create_task(_execute_daily_overview(ws, history=history))
                         elif action["action"] == "start_work_mode":
                             if work_session.active:
                                 response_text = "Already in work mode, sir. What shall I work on?"
@@ -3372,6 +3461,12 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_read_calendar(_cal_range, ws, history=history))
                                 elif embedded_action["action"] == "next_event":
                                     asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                                elif embedded_action["action"] == "morning_briefing":
+                                    asyncio.create_task(_execute_morning_briefing(ws, history=history))
+                                elif embedded_action["action"] == "whats_next":
+                                    asyncio.create_task(_execute_whats_next(ws, history=history))
+                                elif embedded_action["action"] == "daily_overview":
+                                    asyncio.create_task(_execute_daily_overview(ws, history=history))
                                 elif embedded_action["action"] == "set_reminder":
                                     asyncio.create_task(_execute_set_reminder(embedded_action["target"], ws, history=history))
                                 elif embedded_action["action"] == "list_reminders":
