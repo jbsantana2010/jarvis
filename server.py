@@ -60,6 +60,7 @@ import calendar_google
 import briefing
 import search_web
 import obs_controller
+import stream_copilot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -143,6 +144,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
 - You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
+- You CAN run high-level Stream Copilot macros that orchestrate multiple OBS actions safely: [ACTION:STREAM_PREP] (pre-stream checklist — scene + mic + recording, does NOT go live), [ACTION:GO_LIVE] (full go-live: start stream + recording + switch to gameplay scene), [ACTION:BRB_MODE] (switch to BRB scene + mute mic), [ACTION:PANIC_MODE] (emergency: cut to safe scene + mute, or end stream if configured), [ACTION:END_STREAM] (graceful wrap-up: outro scene → stop stream → stop recording).
 
 NOT AVAILABLE ON THIS PLATFORM (WSL — these are macOS-only features):
 - Apple Calendar, Apple Notes — not available on WSL; use [ACTION:READ_CALENDAR] for Google Calendar instead
@@ -267,6 +269,11 @@ When you decide the user needs something DONE (not just discussed), include an a
   "remind me every day at 8 AM to check email" → [ACTION:SET_REMINDER] every day at 8 AM ||| check email
   "remind me every weekday at 9 AM for standup" → [ACTION:SET_REMINDER] every weekday at 9 AM ||| standup
   "remind me every monday at 6 PM for team meeting" → [ACTION:SET_REMINDER] every monday at 6 PM ||| team meeting
+- [ACTION:STREAM_PREP] — pre-stream checklist: switch to starting scene, unmute mic, start recording. Does NOT go live. Use when user says "stream prep", "get ready to stream", "prepare the stream", "set up stream".
+- [ACTION:GO_LIVE] — full go-live macro: starts stream + recording, then switches to gameplay scene. Use when user says "go live", "begin streaming". For a plain stream start without scene orchestration, use START_STREAM.
+- [ACTION:BRB_MODE] — switch to BRB scene and mute mic. Use when user says "brb", "be right back", "going on break", "stepping away", "going brb".
+- [ACTION:PANIC_MODE] — emergency: cut to safe scene + mute mic (or end stream if STREAM_PANIC_STOPS_STREAM=true). Use when user says "panic", "panic mode", "emergency", "something went wrong on stream".
+- [ACTION:END_STREAM] — graceful stream end: switch to outro scene, stop stream, stop recording. Use when user says "wrap up the stream", "end stream safe", "sign off", "stream outro", "that's a wrap".
 - [ACTION:OBS_STATUS] — get current OBS stream/recording/scene status. Fast-path: "am I live", "stream status", "what's my stream".
 - [ACTION:START_STREAM] — start the OBS stream. Use on explicit "go live", "start stream", "start streaming".
 - [ACTION:STOP_STREAM] — stop the OBS stream. SAFETY: only trigger on EXPLICIT stop commands: "stop stream", "stop streaming", "end stream", "go offline". Never infer.
@@ -832,7 +839,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1490,6 +1497,45 @@ async def _execute_list_scenes(ws=None, history=None) -> str:
 async def _execute_toggle_mic(ws=None, history=None) -> str:
     """Toggle the OBS microphone mute state."""
     _, msg = await obs_controller.toggle_mic()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# Stream Copilot executors (Sprint 11)
+# ---------------------------------------------------------------------------
+
+async def _execute_stream_prep(ws=None, history=None) -> str:
+    """Run the pre-stream checklist (scene, mic, recording — does not go live)."""
+    _, msg = await stream_copilot.stream_prep()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_go_live(ws=None, history=None) -> str:
+    """Full go-live macro: start stream + recording + switch to gameplay scene."""
+    _, msg = await stream_copilot.go_live()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_brb_mode(ws=None, history=None) -> str:
+    """Switch to BRB scene and mute mic."""
+    _, msg = await stream_copilot.brb_mode()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_panic_mode(ws=None, history=None) -> str:
+    """Emergency: cut to safe scene + mute, or stop stream if configured."""
+    _, msg = await stream_copilot.panic_mode()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_end_stream_safe(ws=None, history=None) -> str:
+    """Graceful stream end: outro scene → stop stream → stop recording."""
+    _, msg = await stream_copilot.end_stream_safe()
     await _obs_speak(msg, ws)
     return msg
 
@@ -2330,12 +2376,47 @@ def detect_action_fast(text: str) -> dict | None:
     ]):
         return {"action": "obs_status"}
 
-    # OBS — start stream
+    # Stream Copilot — stream prep (pre-flight, does NOT go live)
     if any(p in t for p in [
-        "go live", "start stream", "start streaming", "start the stream",
-        "begin stream", "begin streaming",
+        "stream prep", "pre stream", "pre-stream", "prepare to stream",
+        "get ready to stream", "set up stream", "setup stream",
+        "prep the stream", "prep stream",
+    ]):
+        return {"action": "stream_prep"}
+
+    # Stream Copilot — go live (full macro: start stream + switch scene)
+    if any(p in t for p in [
+        "go live", "begin stream", "begin streaming",
+    ]):
+        return {"action": "go_live"}
+
+    # OBS — start stream (direct, no scene orchestration)
+    if any(p in t for p in [
+        "start stream", "start streaming", "start the stream",
     ]):
         return {"action": "start_stream"}
+
+    # Stream Copilot — brb mode
+    if any(p in t for p in [
+        "brb", "be right back", "going brb", "brb mode",
+        "take a break", "going on break", "stepping away",
+    ]):
+        return {"action": "brb_mode"}
+
+    # Stream Copilot — panic mode
+    if any(p in t for p in [
+        "panic", "panic mode", "emergency", "emergency mode",
+        "cut to safe", "hide stream", "something went wrong",
+    ]):
+        return {"action": "panic_mode"}
+
+    # Stream Copilot — end stream safe (graceful wrap-up with outro)
+    if any(p in t for p in [
+        "end stream safe", "wrap up stream", "wrap up the stream",
+        "end the stream safely", "wrap stream", "outro",
+        "stream outro", "sign off", "that's a wrap", "thats a wrap",
+    ]):
+        return {"action": "end_stream_safe"}
 
     # OBS — stop stream (SAFETY: explicit phrases only)
     if any(p in t for p in [
@@ -3160,6 +3241,21 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "toggle_mic":
                             response_text = "Toggling your mic, sir."
                             asyncio.create_task(_execute_toggle_mic(ws, history=history))
+                        elif _work_fast["action"] == "stream_prep":
+                            response_text = "Running stream prep, sir."
+                            asyncio.create_task(_execute_stream_prep(ws, history=history))
+                        elif _work_fast["action"] == "go_live":
+                            response_text = "Going live, sir."
+                            asyncio.create_task(_execute_go_live(ws, history=history))
+                        elif _work_fast["action"] == "brb_mode":
+                            response_text = "Switching to BRB, sir."
+                            asyncio.create_task(_execute_brb_mode(ws, history=history))
+                        elif _work_fast["action"] == "panic_mode":
+                            response_text = "Engaging panic mode, sir."
+                            asyncio.create_task(_execute_panic_mode(ws, history=history))
+                        elif _work_fast["action"] == "end_stream_safe":
+                            response_text = "Wrapping up the stream, sir."
+                            asyncio.create_task(_execute_end_stream_safe(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -3339,6 +3435,21 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "toggle_mic":
                             response_text = "Toggling your mic, sir."
                             asyncio.create_task(_execute_toggle_mic(ws, history=history))
+                        elif action["action"] == "stream_prep":
+                            response_text = "Running stream prep, sir."
+                            asyncio.create_task(_execute_stream_prep(ws, history=history))
+                        elif action["action"] == "go_live":
+                            response_text = "Going live, sir."
+                            asyncio.create_task(_execute_go_live(ws, history=history))
+                        elif action["action"] == "brb_mode":
+                            response_text = "Switching to BRB, sir."
+                            asyncio.create_task(_execute_brb_mode(ws, history=history))
+                        elif action["action"] == "panic_mode":
+                            response_text = "Engaging panic mode, sir."
+                            asyncio.create_task(_execute_panic_mode(ws, history=history))
+                        elif action["action"] == "end_stream_safe":
+                            response_text = "Wrapping up the stream, sir."
+                            asyncio.create_task(_execute_end_stream_safe(ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -3532,6 +3643,16 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_list_scenes(ws, history=history))
                                 elif embedded_action["action"] == "toggle_mic":
                                     asyncio.create_task(_execute_toggle_mic(ws, history=history))
+                                elif embedded_action["action"] == "stream_prep":
+                                    asyncio.create_task(_execute_stream_prep(ws, history=history))
+                                elif embedded_action["action"] == "go_live":
+                                    asyncio.create_task(_execute_go_live(ws, history=history))
+                                elif embedded_action["action"] == "brb_mode":
+                                    asyncio.create_task(_execute_brb_mode(ws, history=history))
+                                elif embedded_action["action"] == "panic_mode":
+                                    asyncio.create_task(_execute_panic_mode(ws, history=history))
+                                elif embedded_action["action"] == "end_stream_safe":
+                                    asyncio.create_task(_execute_end_stream_safe(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
