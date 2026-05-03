@@ -58,6 +58,7 @@ import conversation_db
 import mail_gmail
 import calendar_google
 import briefing
+import search_web
 import obs_controller
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -123,6 +124,7 @@ You ARE the JARVIS project at {project_dir} on {user_name}'s computer. Your code
 
 YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT NOW):
 - You CAN open a terminal window on Windows — Windows Terminal (wt.exe) launches automatically
+- You CAN search the web and answer factual/current questions directly — use [ACTION:WEB_SEARCH query]. This gives you an inline answer WITHOUT opening a browser.
 - You CAN open any URL or search query in the default Windows browser
 - You CAN open common Windows apps by name — Chrome, Edge, VS Code, Notepad, Calculator, File Explorer, Discord, Spotify, Teams, Zoom, Slack, Word, Excel, PowerPoint, Paint, PowerShell, and more
 - You CAN check the weather for any city, or use the user's saved default location from Settings
@@ -220,7 +222,13 @@ ACTION SYSTEM:
 When you decide the user needs something DONE (not just discussed), include an action tag in your response:
 - [ACTION:SCREEN] — capture and describe what's visible on the user's screen. Use when user says "look at my screen", "what's running", "what do you see", etc. Do NOT use PROMPT_PROJECT for screen requests.
 - [ACTION:BUILD] description — when user wants a project built. Claude Code does the work.
-- [ACTION:BROWSE] url or search query — when user wants to see a webpage or search result in their default browser
+- [ACTION:WEB_SEARCH] query — search the web and answer inline. Use for ANY factual/current question: news, prices, scores, "what is X", "latest on X", "who won X", "what's the current X". JARVIS speaks the answer directly — no browser is opened.
+  "what's the latest on NVIDIA?" → [ACTION:WEB_SEARCH] latest NVIDIA news
+  "who won the last Lakers game?" → [ACTION:WEB_SEARCH] Lakers last game result
+  "what is the current Bitcoin price?" → [ACTION:WEB_SEARCH] Bitcoin price today
+  "find the latest news about Steam" → [ACTION:WEB_SEARCH] Steam latest news
+  IMPORTANT: Use WEB_SEARCH (not BROWSE) whenever the user wants an answer spoken back. Use BROWSE only when they explicitly want to open a browser tab.
+- [ACTION:BROWSE] url or search query — when user explicitly wants to open a webpage in their browser ("open a tab for X", "pull up X", "google X")
 - [ACTION:RESEARCH] detailed research brief — when user wants real research with real data. Claude Code will browse the web, find real listings/data, and create a report document. Give it a detailed brief of what to find.
 - [ACTION:OPEN_TERMINAL] — when user just wants a fresh Claude Code terminal with no specific project
 - [ACTION:OPEN_APP] app_name — open a Windows app by name. Use the plain human name.
@@ -824,7 +832,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1303,6 +1311,12 @@ async def _speak_result(msg: str, label: str, ws, history):
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception as e:
             log.warning("%s ws send failed: %s", label, e)
+
+
+async def _execute_web_search(query: str, ws=None, history=None):
+    """Search the web and speak a summarized answer."""
+    msg = await search_web.search_and_summarize(query.strip(), anthropic_client)
+    await _speak_result(msg, f"web_search({query[:40]})", ws, history)
 
 
 async def _execute_morning_briefing(ws=None, history=None):
@@ -2226,18 +2240,34 @@ def detect_action_fast(text: str) -> dict | None:
                 return {"action": "write_clipboard", "target": _clip_text}
             break
 
-    # Browser / search fast path — catches "search for X", "open a tab and search for X", etc.
-    # Phrase must start with one of these prefixes (word-count guard already applied above).
-    _SEARCH_PREFIXES = (
-        "search for ", "search the web for ", "google ",
-        "look up ", "look this up: ", "find me ",
-        "open a tab and search for ", "open a new tab and search for ",
-        "open a tab and look up ", "open a tab for ", "open browser and search for ",
-        "new tab and search for ", "search online for ",
+    # Web search fast path — JARVIS fetches and answers directly (no browser opened)
+    _WEB_SEARCH_PREFIXES = (
+        "search for ", "search the web for ", "search online for ",
+        "look up ", "look this up: ", "find me ", "find information about ",
+        "find out ", "find out about ",
+        "what's the latest on ", "whats the latest on ",
+        "latest news on ", "latest on ",
+        "who won ", "what happened with ", "what happened to ",
+        "tell me about ",
     )
-    for _sp in _SEARCH_PREFIXES:
+    for _sp in _WEB_SEARCH_PREFIXES:
         if t.startswith(_sp):
             _query = text[len(_sp):].strip()
+            if _query:
+                return {"action": "web_search", "target": _query}
+            break
+
+    # Browser open fast path — explicitly open a tab / browser (no inline answer)
+    _BROWSER_PREFIXES = (
+        "open a tab and search for ", "open a new tab and search for ",
+        "open a tab and look up ", "open a tab for ",
+        "open browser and search for ", "open browser for ",
+        "new tab and search for ", "new tab for ",
+        "google ", "pull up ",
+    )
+    for _bp in _BROWSER_PREFIXES:
+        if t.startswith(_bp):
+            _query = text[len(_bp):].strip()
             if _query:
                 return {"action": "browse", "target": _query}
             break
@@ -3043,6 +3073,7 @@ async def voice_handler(ws: WebSocket):
                             "check_mail", "summarize_mail",
                             "check_calendar", "read_calendar", "next_event",
                             "morning_briefing", "whats_next", "daily_overview",
+                            "web_search",
                             "list_reminders", "start_work_mode"):
                         if _work_fast["action"] == "take_screenshot":
                             response_text = "Taking a screenshot now, sir."
@@ -3083,6 +3114,10 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "next_event":
                             response_text = "Checking your next event, sir."
                             asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                        elif _work_fast["action"] == "web_search":
+                            _sq = _work_fast.get("target", "")
+                            response_text = "Searching now, sir."
+                            asyncio.create_task(_execute_web_search(_sq, ws, history=history))
                         elif _work_fast["action"] == "morning_briefing":
                             response_text = "One moment, sir."
                             asyncio.create_task(_execute_morning_briefing(ws, history=history))
@@ -3208,6 +3243,10 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "next_event":
                             response_text = "Let me check what's coming up, sir."
                             asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                        elif action["action"] == "web_search":
+                            _sq = action.get("target", "")
+                            response_text = "Searching now, sir."
+                            asyncio.create_task(_execute_web_search(_sq, ws, history=history))
                         elif action["action"] == "morning_briefing":
                             response_text = "One moment, sir."
                             asyncio.create_task(_execute_morning_briefing(ws, history=history))
@@ -3461,6 +3500,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_read_calendar(_cal_range, ws, history=history))
                                 elif embedded_action["action"] == "next_event":
                                     asyncio.create_task(_execute_read_calendar("next_event", ws, history=history))
+                                elif embedded_action["action"] == "web_search":
+                                    asyncio.create_task(_execute_web_search(embedded_action.get("target", ""), ws, history=history))
                                 elif embedded_action["action"] == "morning_briefing":
                                     asyncio.create_task(_execute_morning_briefing(ws, history=history))
                                 elif embedded_action["action"] == "whats_next":
