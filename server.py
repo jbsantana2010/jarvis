@@ -2583,24 +2583,30 @@ def detect_action_fast(text: str) -> dict | None:
         return {"action": "panic_mode"}
 
     # Stream Copilot — end stream safe (graceful wrap-up with outro)
+    # Note: "end stream" alone is handled by stop_stream above; these are longer, unambiguous phrases
     if any(p in t for p in [
         "end stream safe", "wrap up stream", "wrap up the stream",
-        "end the stream safely", "wrap stream", "outro",
-        "stream outro", "sign off", "that's a wrap", "thats a wrap",
+        "end the stream safely", "wrap stream", "stream outro",
+        "sign off", "that's a wrap", "thats a wrap",
     ]):
         return {"action": "end_stream_safe"}
 
-    # OBS — stop stream (SAFETY: explicit phrases only)
-    if any(p in t for p in [
+    # OBS — stop stream (SAFETY: phrase must lead the sentence — no substring matches)
+    _STOP_STREAM_PHRASES = (
         "stop stream", "stop streaming", "stop the stream",
         "end stream", "end the stream", "end streaming", "go offline",
-    ]):
+    )
+    if any(t == p or t.startswith(p + " ") or t.startswith(p + ",")
+           or t.startswith("jarvis " + p) or t.startswith("hey jarvis " + p)
+           for p in _STOP_STREAM_PHRASES):
         return {"action": "stop_stream"}
 
     # OBS — recording control
     if any(p in t for p in ["start recording", "start the recording", "begin recording"]):
         return {"action": "start_recording"}
-    if any(p in t for p in ["stop recording", "stop the recording", "end recording"]):
+    _STOP_REC_PHRASES = ("stop recording", "stop the recording", "end recording")
+    if any(t == p or t.startswith(p + " ") or t.startswith("jarvis " + p)
+           for p in _STOP_REC_PHRASES):
         return {"action": "stop_recording"}
 
     # OBS — list scenes
@@ -2610,13 +2616,17 @@ def detect_action_fast(text: str) -> dict | None:
     ]):
         return {"action": "list_scenes"}
 
-    # OBS — switch scene
+    # OBS — switch scene (filter out conversational "switch to it/that/this")
     if any(p in t for p in ["switch to ", "switch scene", "change scene", "go to scene"]):
         import re as _re_obs
         m = _re_obs.search(r'(?:switch to|go to|change to|change scene to)\s+(.+)$', t)
         scene_query = m.group(1).strip() if m else t
         for stop in ("scene", "view", "layout"):
             scene_query = scene_query.removesuffix(" " + stop).strip()
+        # Ignore vague pronoun targets — not a real scene name
+        _PRONOUNS = {"it", "that", "this", "there", "here", "one", "them"}
+        if scene_query.lower() in _PRONOUNS or not scene_query:
+            return None
         return {"action": "switch_scene", "target": scene_query}
 
     # OBS — mic toggle
