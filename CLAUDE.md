@@ -11,30 +11,33 @@ especially useful when switching between machines (home ↔ work laptop).
 A voice-activated AI assistant running on WSL/Windows. The user speaks → browser
 captures audio via Web Speech API → WebSocket → FastAPI backend → Anthropic Claude
 for reasoning → Fish Audio for TTS → MP3 streamed back to browser. Falls back to
-browser-native `window.speechSynthesis` if Fish Audio fails.
+browser-native window.speechSynthesis if Fish Audio fails.
 
-Current sprint: **Sprint 8 complete** (reminders + Windows notifications).
+Current sprint: **Sprint 12 complete** (Spotify voice control).
 
 ---
 
 ## Architecture
 
-```
 Browser (Vite + TypeScript)
-  │  Web Speech API (STT)
-  │  AudioContext (MP3 playback)
-  │  window.speechSynthesis (TTS fallback)
-  └─ WebSocket ──► FastAPI server (server.py)
-                        │
-                        ├─ Anthropic API (claude-haiku for fast responses,
-                        │                 claude-sonnet for complex ones)
-                        ├─ Fish Audio API (TTS → MP3 bytes → base64)
-                        ├─ platform_adapter.py  (all WSL/Windows OS ops)
-                        ├─ actions.py           (high-level action helpers)
-                        ├─ mail_gmail.py        (Gmail read via OAuth)
-                        ├─ conversation_db.py   (SQLite conversation history)
-                        └─ reminders.py         (SQLite reminders + scheduler)
-```
+  Web Speech API (STT)
+  AudioContext (MP3 playback)
+  window.speechSynthesis (TTS fallback)
+  WebSocket -> FastAPI server (server.py)
+                        |
+                        +- Anthropic API (claude-haiku fast, claude-sonnet complex)
+                        +- Fish Audio API (TTS -> MP3 bytes -> base64)
+                        +- platform_adapter.py  (all WSL/Windows OS ops)
+                        +- actions.py           (high-level action helpers)
+                        +- mail_gmail.py        (Gmail read via OAuth)
+                        +- calendar_google.py   (Google Calendar read+write via OAuth)
+                        +- briefing.py          (morning briefing + daily overview)
+                        +- search_web.py        (Brave Search API + freshness)
+                        +- obs_controller.py    (OBS Studio via WebSocket v5)
+                        +- stream_copilot.py    (multi-step OBS macro sequences)
+                        +- spotify_controller.py (Spotify Web API via spotipy)
+                        +- conversation_db.py   (SQLite conversation history)
+                        +- reminders.py         (SQLite reminders + scheduler)
 
 ---
 
@@ -42,122 +45,305 @@ Browser (Vite + TypeScript)
 
 | File | Purpose |
 |------|---------|
-| `server.py` | Main FastAPI app (~2700 lines), WebSocket handler, all action executors, system prompt, background scheduler |
-| `platform_adapter.py` | All WSL/Windows OS calls: launch apps, open URLs, screenshot, clipboard, Windows notifications |
-| `actions.py` | Higher-level helpers (open_app, open_browser, open_terminal) |
-| `conversation_db.py` | SQLite conversation persistence (`~/.jarvis/conversations.db`) |
-| `reminders.py` | SQLite reminder storage, natural language time parsing, voice formatting |
-| `mail_gmail.py` | Gmail OAuth integration — read inbox, summarize with AI |
-| `screen.py` | Screenshot routing (WSL → platform_adapter, macOS → native) |
-| `dispatch_registry.py` | Tracks background Claude Code build tasks |
-| `work_mode.py` | Work session management (claude -p subprocess) |
-| `frontend/src/main.ts` | WebSocket client, state machine, audio playback, browser TTS fallback |
-| `frontend/src/voice.ts` | AudioContext queue player |
-| `frontend/src/settings.ts` | Settings panel (preferences API) |
-| `verify_jarvis.sh` | Full smoke test — always run after a pull or before pushing |
+| server.py | Main FastAPI app, WebSocket handler, all action executors, system prompt, scheduler |
+| platform_adapter.py | All WSL/Windows OS calls: launch apps, open URLs, screenshot, clipboard, notifications |
+| actions.py | Higher-level helpers (open_app, open_browser, open_terminal) |
+| conversation_db.py | SQLite conversation persistence (~/.jarvis/conversations.db) |
+| reminders.py | SQLite reminder storage, natural language time parsing, voice formatting |
+| mail_gmail.py | Gmail OAuth integration -- read inbox, summarize with AI |
+| calendar_google.py | Google Calendar OAuth -- read events + create new events (full scope) |
+| briefing.py | Morning briefing: weather + calendar + unread mail summary |
+| search_web.py | Brave Search API with freshness param for live data (prices, scores, news) |
+| obs_controller.py | OBS Studio WebSocket v5 control (scenes, streaming, recording, mic) |
+| stream_copilot.py | High-level OBS macros: stream_prep, go_live, brb_mode, panic_mode, end_stream |
+| spotify_controller.py | Spotify Web API via spotipy: play/pause/skip/volume/search/queue |
+| screen.py | Screenshot routing (WSL -> platform_adapter, macOS -> native) |
+| dispatch_registry.py | Tracks background Claude Code build tasks |
+| work_mode.py | Work session management (claude -p subprocess) |
+| frontend/src/main.ts | WebSocket client, state machine, audio playback, browser TTS fallback |
+| frontend/src/voice.ts | AudioContext queue player |
+| frontend/src/settings.ts | Settings panel (preferences API) |
+| verify_jarvis.sh | Full smoke test -- always run after a pull or before pushing |
 
 ---
 
 ## Action tag system
 
-The LLM embeds `[ACTION:TAG] target` in its response. `server.py` strips the tag
+The LLM embeds [ACTION:TAG] target in its response. server.py strips the tag
 from spoken text and dispatches the action as a background side effect.
 
-**Current actions:**
+Three dispatch paths:
+1. detect_action_fast() -- keyword-matched shortcut before LLM (low latency)
+2. Work mode -- routes to claude -p subprocess
+3. Regex scan of LLM response for embedded [ACTION:TAG] tokens
+
+### All current actions
 
 | Action | What it does |
 |--------|-------------|
-| `OPEN_APP` | Launch a Windows app by name (registry-based) |
-| `BROWSE` | Open URL or search query in default browser |
-| `WEATHER` | Fetch weather for a city or saved default location |
-| `SCREEN` | Capture and describe the screen |
-| `READ_CLIPBOARD` | Read and speak clipboard contents |
-| `WRITE_CLIPBOARD text` | Write text to clipboard |
-| `READ_MAIL` | List recent Gmail messages |
-| `SUMMARIZE_MAIL` | AI summary of Gmail inbox |
-| `SET_REMINDER time \|\|\| message` | Create a timed reminder |
-| `LIST_REMINDERS` | List all pending reminders |
-| `ADD_TASK priority \|\|\| title \|\|\| desc \|\|\| date` | Create a task |
-| `ADD_NOTE topic \|\|\| content` | Save a note |
-| `COMPLETE_TASK id` | Mark a task done |
-| `REMEMBER content` | Store a fact about the user |
-| `PROMPT_PROJECT name \|\|\| prompt` | Dispatch to Claude Code in a project |
-| `BUILD description` | Create and build a new project |
-| `RESEARCH brief` | Web research + report document |
-| `OPEN_TERMINAL` | Open Windows Terminal with Claude Code |
+| OPEN_APP | Launch a Windows app by name (registry-based) |
+| BROWSE | Open URL or search query in default browser |
+| WEATHER | Fetch weather for a city or saved default location |
+| SCREEN | Capture and describe the screen |
+| READ_CLIPBOARD | Read and speak clipboard contents |
+| WRITE_CLIPBOARD text | Write text to clipboard |
+| READ_MAIL | List recent Gmail messages |
+| SUMMARIZE_MAIL | AI summary of Gmail inbox |
+| SET_REMINDER time ||| message | Create a timed reminder |
+| LIST_REMINDERS | List all pending reminders |
+| ADD_TASK priority ||| title ||| desc ||| date | Create a task |
+| ADD_NOTE topic ||| content | Save a note |
+| COMPLETE_TASK id | Mark a task done |
+| REMEMBER content | Store a fact about the user |
+| PROMPT_PROJECT name ||| prompt | Dispatch to Claude Code in a project |
+| BUILD description | Create and build a new project |
+| RESEARCH brief | Web research + report document |
+| OPEN_TERMINAL | Open Windows Terminal with Claude Code |
+| READ_CALENDAR | List upcoming Google Calendar events |
+| NEXT_EVENT | Speak the very next calendar event |
+| MORNING_BRIEFING | Full briefing: weather + calendar + email |
+| WHATS_NEXT | Next 3 calendar events |
+| DAILY_OVERVIEW | Today's full calendar schedule |
+| WEB_SEARCH query | Search via Brave API (freshness for live data) |
+| OBS_STATUS | Check OBS WebSocket connection |
+| START_STREAM | Start OBS streaming |
+| STOP_STREAM | Stop OBS streaming |
+| START_RECORDING | Start OBS recording |
+| STOP_RECORDING | Stop OBS recording |
+| SWITCH_SCENE scene_name | Switch OBS to named scene |
+| LIST_SCENES | List all OBS scenes |
+| TOGGLE_MIC | Toggle microphone mute in OBS |
+| STREAM_PREP | Macro: starting scene + unmute mic + start recording |
+| GO_LIVE | Macro: start stream + recording + switch to gameplay scene |
+| BRB_MODE | Macro: BRB scene + mute mic |
+| PANIC_MODE | Macro: safe scene + mute (hard mode also stops stream) |
+| END_STREAM | Macro: ending scene + 2s pause + stop stream + stop recording |
+| CREATE_CALENDAR_EVENT title ||| start_iso ||| end_iso | Create calendar event |
+| SPOTIFY_STATUS | Show what's currently playing on Spotify |
+| SPOTIFY_PLAY | Resume Spotify playback |
+| SPOTIFY_PAUSE | Pause Spotify |
+| SPOTIFY_SKIP | Skip to next track |
+| SPOTIFY_PREVIOUS | Go back to previous track |
+| SPOTIFY_VOLUME amount | Set Spotify volume (0-100) |
+| SPOTIFY_PLAY_QUERY query | Search and play artist/playlist/track |
+| SPOTIFY_QUEUE query | Add a track to the queue |
 
-**Fast-path detection:** `detect_action_fast()` catches obvious commands via
-keyword match before hitting the LLM (saves latency for "open calculator",
-"what reminders do I have", clipboard ops, etc.).
+**Fast-path safety rules (critical):**
+- STOP_STREAM and STOP_RECORDING: phrase must LEAD the sentence (no substring match)
+- SWITCH_SCENE: filters pronoun-only targets (it, that, this, there, etc.)
 
 ---
 
 ## Platform adapter — WSL specifics
 
-- App launches: PowerShell `Start-Process` (primary), cmd `/c start` (fallback)
-- URL opening: same `Start-Process` chain (avoids explorer.exe `?` wildcard bug)
-- Screenshots: PowerShell `System.Drawing` → `$env:USERPROFILE\Pictures\Jarvis\`
-- Clipboard read: `powershell.exe Get-Clipboard`
-- Clipboard write: pipe to `clip.exe` stdin
-- Notifications: PowerShell `NotifyIcon` balloon — non-blocking, no installs needed
-- `_WIN_APP_REGISTRY`: maps friendly names → exe/URI (e.g. `discord` → `discord:`)
-- `notify_windows(title, message)`: fire-and-forget Windows balloon notification
+- App launches: PowerShell Start-Process (primary), cmd /c start (fallback)
+- URL opening: same Start-Process chain (avoids explorer.exe ? wildcard bug)
+- Screenshots: PowerShell System.Drawing -> USERPROFILE\Pictures\Jarvis\
+- Clipboard read: powershell.exe Get-Clipboard
+- Clipboard write: pipe to clip.exe stdin
+- Notifications: PowerShell NotifyIcon balloon -- non-blocking, no installs needed
+- _WIN_APP_REGISTRY: maps friendly names -> exe/URI (e.g. discord -> discord:)
+- notify_windows(title, message): fire-and-forget Windows balloon notification
+
+---
+
+## WSL2 Networking (critical -- read before touching OBS or OAuth)
+
+WSL2 is a VM with NAT networking. The Windows host IP is NOT localhost from WSL.
+
+**Correct way to find Windows host IP:**
+  ip route | awk '/^default/ {print $3; exit}'
+  Typically: 172.27.32.1 (changes on reboot but gateway is always correct)
+  Do NOT use /etc/resolv.conf nameserver -- that is the DNS resolver, not the host.
+
+**OBS WebSocket (obs_controller.py):**
+  _get_windows_host_ip() tries default gateway first, falls back to resolv.conf nameserver.
+  OBS must have WebSocket server enabled (Tools > WebSocket Server Settings, port 4455).
+  Windows Firewall MUST have an inbound rule for TCP 4455 from WSL subnet.
+  To add the rule (run as Admin in PowerShell on Windows):
+    New-NetFirewallRule -DisplayName "OBS WebSocket WSL" -Direction Inbound -Protocol TCP -LocalPort 4455 -Action Allow
+
+**OAuth callback servers (Gmail, Calendar, Spotify):**
+  All OAuth redirect servers bind to 0.0.0.0 so the Windows browser can reach them.
+  After capturing the auth code, swap the redirect URL host back to 127.0.0.1
+  for the token exchange (Google/Spotify reject the WSL IP as an authorized redirect).
+  Also requires: export OAUTHLIB_INSECURE_TRANSPORT=1 (plain HTTP in dev mode).
+
+---
+
+## Google Calendar integration
+
+calendar_google.py reads and writes Google Calendar via OAuth.
+Token cached at token_calendar.json in project root.
+Scope: https://www.googleapis.com/auth/calendar (full read+write).
+
+If you see 403 accessNotConfigured: enable Google Calendar API in GCloud console.
+If scope changes (e.g. adding write): delete token_calendar.json to force re-auth.
+
+create_event(title, start_iso, end_iso, description="") -> tuple[bool, str]
+  Uses service.events().insert(calendarId="primary", body=body).execute()
+
+LLM format: [ACTION:CREATE_CALENDAR_EVENT] Meeting with Bob ||| 2025-01-15T14:00:00 ||| 2025-01-15T15:00:00
+  server.py parses the ||| separators; end defaults to 1 hour after start if omitted.
+
+---
+
+## Morning Briefing (Sprint 9)
+
+briefing.py composes a spoken briefing from three sources:
+  1. Weather (platform_adapter weather fetch)
+  2. Google Calendar events for today
+  3. Unread Gmail count / recent subject lines
+
+Actions: MORNING_BRIEFING, DAILY_OVERVIEW, WHATS_NEXT
+Fast-path triggers: "good morning", "morning briefing", "what is my day", "daily overview"
+
+---
+
+## Web Search (Sprint 10)
+
+search_web.py uses Brave Search API (BRAVE_SEARCH_API_KEY in .env).
+Returns top 7 results; Haiku summarizes them into a spoken answer.
+
+Freshness: _needs_freshness(query) checks for keywords like "today", "now",
+"price", "score", "weather", "latest", "current". If matched, adds freshness="pw"
+(past week) to the Brave API call to prioritize recent content.
+
+Haiku prompt instructs: "For prices, scores, or live data: always state the value
+AND note if the result may be delayed."
+
+Action: [ACTION:WEB_SEARCH] bitcoin price today
+Fast-path: "search for", "look up", "google", "what is the price of", "who won"
+
+---
+
+## OBS Studio integration (Sprint 10)
+
+obs_controller.py controls OBS via obsws_python (WebSocket protocol v5).
+Connection to Windows host at gateway IP (see WSL2 Networking above), port 4455.
+
+Key functions:
+  get_status() -> dict with streaming/recording state
+  start_stream(), stop_stream(), start_recording(), stop_recording()
+  switch_scene(name), list_scenes() -> list[str]
+  get_input_mute(input_name), set_input_mute(input_name, muted)
+  toggle_mic() -- toggles the input named in OBS_MIC_INPUT_NAME env var
+
+Env vars: OBS_HOST (auto-detected), OBS_PORT (4455), OBS_PASSWORD, OBS_MIC_INPUT_NAME
+
+---
+
+## Stream Copilot (Sprint 11)
+
+stream_copilot.py contains five async macro functions:
+
+  stream_prep()     -- starting scene + unmute mic + start recording (no stream start)
+  go_live()         -- start stream + recording + 1.5s pause + switch to gameplay scene
+  brb_mode()        -- BRB scene + mute mic (STREAM_BRB_MUTES_MIC=true in .env)
+  panic_mode()      -- soft: safe scene + mute / hard: also stop stream (STREAM_PANIC_STOPS_STREAM)
+  end_stream_safe() -- ending scene + 2s pause + stop stream + stop recording
+
+_find_scene(env_key, *keywords):
+  1. Checks env var (e.g. STREAM_GAMEPLAY_SCENE) for exact scene name
+  2. Falls back to keyword scan of actual OBS scene list (case-insensitive)
+  Returns None if no match found -- action skips gracefully.
+
+_set_mic_muted(muted): explicit state (not toggle) using get_input_mute + set_input_mute.
+
+Env vars for scene names:
+  STREAM_STARTING_SCENE, STREAM_GAMEPLAY_SCENE, STREAM_BRB_SCENE,
+  STREAM_SAFE_SCENE, STREAM_ENDING_SCENE
+  STREAM_BRB_MUTES_MIC=true, STREAM_PANIC_STOPS_STREAM=false
+
+---
+
+## Spotify Control (Sprint 12)
+
+spotify_controller.py uses spotipy (pip install spotipy) + Spotify Web API.
+OAuth flow with WSGI callback server on 0.0.0.0 (WSL2-compatible).
+Token cached at token_spotify.json in project root.
+
+Required env vars: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
+  (redirect URI must be registered in your Spotify Developer app)
+
+Scopes: user-read-playback-state user-modify-playback-state user-read-currently-playing
+Requires Spotify Premium for playback control.
+
+Key functions:
+  get_status()           -- currently playing track + artist + volume
+  play(), pause()        -- resume / pause
+  skip(), previous()     -- next / previous track
+  set_volume(amount)     -- 0-100
+  play_query(query)      -- search and play (prefers playlists for playlist queries,
+                            artists for artist queries, else tracks)
+  queue_query(query)     -- add track to queue
+
+_MOOD_MAP maps natural phrases to search queries:
+  "something chill" -> "chill vibes playlist"
+  "focus music" -> "deep focus music playlist"
+  etc.
+
+_active_device_id(sp): returns active device, falls back to first available device.
+
+Setup steps:
+  1. Create app at developer.spotify.com
+  2. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env
+  3. Set SPOTIFY_REDIRECT_URI=http://localhost:8888/callback (register this in the app)
+  4. Run JARVIS and say "play some music" -- browser will open for OAuth consent
+  5. After auth, token is cached; subsequent requests work without browser
 
 ---
 
 ## Reminder system (Sprint 8)
 
-`reminders.py` manages time-based reminders in `~/.jarvis/reminders.db`.
+reminders.py manages time-based reminders in ~/.jarvis/reminders.db.
 
-**Time parsing supports:** `in 10 minutes`, `in 2 hours`, `at 6 PM`,
-`at 3:30 PM`, `tomorrow at 9 AM`. Returns `None` if unparseable.
+Time parsing supports: "in 10 minutes", "in 2 hours", "at 6 PM",
+"at 3:30 PM", "tomorrow at 9 AM". Returns None if unparseable.
 
-**Scheduler:** `_reminder_scheduler_loop()` runs as an `asyncio.create_task` at
-server boot. Polls every 30 seconds. When a reminder fires:
-1. Marks it `done` immediately (prevents double-firing).
-2. Calls `platform_adapter.notify_windows()` — visible even if browser is closed.
-3. Speaks via TTS on all active WebSocket connections.
+Scheduler: _reminder_scheduler_loop() runs as asyncio.create_task at server boot.
+Polls every 30 seconds. When a reminder fires:
+  1. Marks it done immediately (prevents double-firing).
+  2. Calls platform_adapter.notify_windows() -- visible even if browser closed.
+  3. Speaks via TTS on all active WebSocket connections.
 
-**LLM action format:** `[ACTION:SET_REMINDER] in 10 minutes ||| stretch`
-The `|||` separator splits time expression from message.
+LLM action format: [ACTION:SET_REMINDER] in 10 minutes ||| stretch
 
 ---
 
 ## Gmail integration (Sprint 7)
 
-`mail_gmail.py` reads Gmail via OAuth. Credentials stored at
-`~/.jarvis/gmail_token.json`. First run opens browser for OAuth consent.
-
-Actions: `[ACTION:READ_MAIL]` lists recent messages, `[ACTION:SUMMARIZE_MAIL]`
-uses Claude to summarize and highlight what matters.
+mail_gmail.py reads Gmail via OAuth. Token at ~/.jarvis/gmail_token.json.
+First run opens browser for OAuth consent.
+Actions: READ_MAIL (list recent), SUMMARIZE_MAIL (AI summary of inbox)
 
 ---
 
 ## Conversation persistence
 
-`conversation_db.py` stores every turn in `~/.jarvis/conversations.db` (SQLite).
-On WebSocket connect, the last 20 messages are loaded into `history[]` so
-JARVIS remembers context across server restarts. DB is pruned to 200 rows max.
+conversation_db.py stores every turn in ~/.jarvis/conversations.db (SQLite).
+On WebSocket connect, last 20 messages loaded into history[] so JARVIS remembers
+context across server restarts. DB pruned to 200 rows max.
 
 ---
 
 ## Work mode
 
-"Start work mode" launches a `claude -p` subprocess (`WorkSession`). Subsequent
-speech is routed there as a coding assistant. Stop phrases like "stop work mode",
-"end work session", etc. return to normal voice mode.
+"Start work mode" launches a claude -p subprocess (WorkSession). Subsequent
+speech routes there as a coding assistant. Stop phrases like "stop work mode",
+"end work session" return to normal voice mode.
 
 ---
 
 ## Frontend state machine
 
-`idle → listening → thinking → speaking → idle`
+idle -> listening -> thinking -> speaking -> idle
 
-- `status:idle` from server is **ignored** while in `speaking` state (prevents
-  race where server finishes before audio playback completes).
-- `speakingWatchdog`: 30s timeout forces idle if stuck in speaking state.
-- `{type:"text"}` triggers browser TTS fallback (Fish Audio failure path).
-- `{type:"audio"}` with valid base64 MP3 cancels browser TTS and plays Fish Audio.
+- status:idle from server is IGNORED while in speaking state (prevents race
+  where server finishes before audio playback completes).
+- speakingWatchdog: 30s timeout forces idle if stuck in speaking state.
+- {type:"text"} triggers browser TTS fallback (Fish Audio failure path).
+- {type:"audio"} with valid base64 MP3 cancels browser TTS and plays Fish Audio.
 
 ---
 
@@ -169,10 +355,31 @@ FISH_API_KEY=
 FISH_VOICE_ID=612b878b113047d9a770c069c8b4fdfe
 USER_LOCATION=San Juan, Puerto Rico
 DEV_MODE=1
+
+# OBS WebSocket
+OBS_PORT=4455
+OBS_PASSWORD=your_obs_ws_password
+OBS_MIC_INPUT_NAME=Mic/Aux
+
+# Stream Copilot scene names (optional -- falls back to keyword scan)
+STREAM_STARTING_SCENE=Starting Soon
+STREAM_GAMEPLAY_SCENE=Gameplay
+STREAM_BRB_SCENE=BRB
+STREAM_SAFE_SCENE=Safe Scene
+STREAM_ENDING_SCENE=Ending Screen
+STREAM_BRB_MUTES_MIC=true
+STREAM_PANIC_STOPS_STREAM=false
+
+# Brave Search
+BRAVE_SEARCH_API_KEY=
+
+# Spotify
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
 ```
 
-`DEV_MODE=1` disables SSL so the server runs plain HTTP (required for Vite proxy
-in development). Do NOT set in production if you have certs.
+DEV_MODE=1 disables SSL (required for Vite proxy in dev). Do NOT set in production.
 
 ---
 
@@ -180,16 +387,16 @@ in development). Do NOT set in production if you have certs.
 
 | Script | Purpose |
 |--------|---------|
-| `verify_jarvis.sh` | Full smoke test — run after every pull or before pushing |
-| `typecheck_frontend.sh` | TypeScript type-check only |
-| `setup_dev_env.sh` | First-time setup on a new machine (npm install + import check) |
+| verify_jarvis.sh | Full smoke test -- run after every pull or before pushing |
+| typecheck_frontend.sh | TypeScript type-check only |
+| setup_dev_env.sh | First-time setup on a new machine (npm install + import check) |
 
 **Start JARVIS:**
 ```bash
-# Terminal 1 — backend
+# Terminal 1 -- backend
 cd ~/dev/jarvis/jarvis && DEV_MODE=1 python3 server.py
 
-# Terminal 2 — frontend
+# Terminal 2 -- frontend
 cd ~/dev/jarvis/jarvis/frontend && npm run dev
 
 # Browser
@@ -206,29 +413,54 @@ open http://localhost:5173
 | 2 | Windows Terminal integration, browser control via Start-Process |
 | 3 | Windows app registry (43 apps), PowerShell launch chain, weather |
 | 4 | Screenshot (WSL), URI protocol launches, work mode stop phrases |
-| 5 | Browser search fix (explorer.exe `?` bug), frontend stuck-state fix, settings |
+| 5 | Browser search fix (explorer.exe ? bug), frontend stuck-state fix, settings |
 | 6 | Browser TTS fallback, clipboard read/write, conversation persistence (SQLite) |
 | 7 | Gmail integration (OAuth, read + AI summarize inbox) |
-| 8 | Reminder system: SQLite storage, NL time parsing, background scheduler, Windows balloon notifications |
+| 8 | Reminder system + Windows notifications; Google Calendar read via OAuth |
+| 9 | Morning Briefing, Daily Overview, What Next (weather + calendar + mail) |
+| 10 | Web Search via Brave API (freshness for live data); OBS Studio WebSocket control |
+| 11 | Stream Copilot macros: go_live, brb_mode, panic_mode, end_stream, stream_prep |
+| 12 | Spotify voice control: play/pause/skip/volume/search/queue via Spotify Web API |
 
 ---
 
 ## Common issues & fixes
 
-**Search opens File Explorer**: `explorer.exe` treats `?` as a wildcard. Fixed by
-using PowerShell `Start-Process` for all URL opening.
+**Search opens File Explorer**: explorer.exe treats ? as a wildcard.
+  Fixed by using PowerShell Start-Process for all URL opening.
 
-**Frontend stuck in speaking**: Server sends `status:idle` before audio finishes
-playing. Fixed by ignoring server idle signals while `currentState === "speaking"`.
+**OBS connection refused from WSL**: Two causes:
+  1. Wrong Windows IP (using DNS nameserver instead of default gateway). Fixed in obs_controller.py.
+  2. Windows Firewall blocking port 4455 from WSL subnet. Add inbound rule (see WSL2 Networking).
 
-**TTS fallback stuck 30s**: `{type:"text"}` wasn't triggering audio, so state
-never left speaking. Fixed by wiring text messages to `speakWithBrowserTts()`.
+**OAuth insecure transport error**: Set OAUTHLIB_INSECURE_TRANSPORT=1 in .env for local dev.
 
-**Multi-line git commits in PowerShell**: heredoc syntax (`<<'EOF'`) is rejected.
-Workaround: write commit message to a temp file, use `git commit -F`.
+**Calendar 403 accessNotConfigured**: Enable Google Calendar API at console.cloud.google.com.
 
-**pip --break-system-packages**: WSL pip 22.x doesn't support this flag.
-Use plain `pip3 install -r requirements.txt`.
+**Calendar token stale after scope change**: Delete token_calendar.json and re-auth.
 
-**Vite proxy SSL error (EPROTO)**: Proxy target must be `http://` not `https://`
-when backend runs with `DEV_MODE=1`. Already fixed in `vite.config.ts`.
+**Spotify auth needed**: First time, say "play something" and complete OAuth in browser.
+
+**Brave Search returning stale prices/scores**: Ensure BRAVE_SEARCH_API_KEY is set (not
+  commented out) in .env. The key must NOT start with # .
+
+**stop_stream false positive** (e.g. "best stop streaming service" triggered stop):
+  Fixed: stop_stream and stop_recording phrases must LEAD the sentence.
+
+**switch_scene false positive** (e.g. "you switched to it" triggered scene switch):
+  Fixed: scene targets that are pronouns (it, that, this, there...) are filtered out.
+
+**Frontend stuck in speaking**: Server sends status:idle before audio finishes playing.
+  Fixed by ignoring server idle signals while currentState === "speaking".
+
+**TTS fallback stuck 30s**: {type:"text"} was not triggering audio, state never left speaking.
+  Fixed by wiring text messages to speakWithBrowserTts().
+
+**Multi-line git commits in PowerShell**: heredoc syntax is rejected.
+  Workaround: write commit message to a temp file, use git commit -F.
+
+**pip --break-system-packages**: WSL pip 22.x does not support this flag.
+  Use plain pip3 install -r requirements.txt.
+
+**Vite proxy SSL error (EPROTO)**: Proxy target must be http:// not https://
+  when backend runs with DEV_MODE=1. Already fixed in vite.config.ts.
