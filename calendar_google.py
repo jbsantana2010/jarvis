@@ -1,5 +1,5 @@
 """
-calendar_google.py — Google Calendar integration for JARVIS (read-only, Sprint 8)
+calendar_google.py — Google Calendar integration for JARVIS (read + write, Sprint 8+)
 
 Reuses the same credentials.json already in use for Gmail.
 Stores a separate token (token_calendar.json) to keep scopes independent.
@@ -29,7 +29,7 @@ from typing import Optional
 
 log = logging.getLogger("jarvis.calendar")
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 # ---------------------------------------------------------------------------
 # Lazy dependency check
@@ -504,3 +504,54 @@ def friendly_error(exc: Exception) -> str:
     if "libraries not installed" in msg:
         return "the Google libraries are not installed"
     return "the connection failed"
+
+
+# ---------------------------------------------------------------------------
+# Create event
+# ---------------------------------------------------------------------------
+
+async def create_event(
+    title: str,
+    start_iso: str,
+    end_iso: str,
+    description: str = "",
+) -> tuple[bool, str]:
+    """Create a new event on the user's primary Google Calendar.
+
+    Args:
+        title:       Event title / summary.
+        start_iso:   ISO 8601 datetime string, e.g. "2026-05-04T11:00:00".
+        end_iso:     ISO 8601 datetime string for end time.
+        description: Optional event description / notes.
+
+    Returns (success, voice_message).
+    """
+    if not _check_deps():
+        return False, "Google libraries not installed, sir."
+
+    def _run() -> tuple[bool, str]:
+        try:
+            service = _build_service_sync()
+            if service is None:
+                return False, "Couldn't connect to Google Calendar, sir."
+
+            tz_name = os.getenv("USER_TIMEZONE", "").strip()
+            tz_str = tz_name if tz_name else _local_now().strftime("%z") or "UTC"
+
+            body = {
+                "summary": title,
+                "description": description,
+                "start": {"dateTime": start_iso, "timeZone": tz_str},
+                "end":   {"dateTime": end_iso,   "timeZone": tz_str},
+            }
+            event = service.events().insert(calendarId="primary", body=body).execute()
+            link = event.get("htmlLink", "")
+            return True, f"Done, sir — '{title}' has been added to your calendar."
+        except Exception as exc:
+            log.warning(f"create_event failed: {exc}")
+            return False, f"Couldn't create the event, sir — {friendly_error(exc)}."
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_run), timeout=15)
+    except asyncio.TimeoutError:
+        return False, "Calendar request timed out, sir."

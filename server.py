@@ -138,7 +138,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN remember facts about {user_name} — preferences, decisions, goals. Use [ACTION:REMEMBER] to store important info.
 - You CAN read and write the Windows clipboard — read what was copied, or put text into the clipboard.
 - You CAN read and summarize Gmail inbox — use [ACTION:READ_MAIL] to list recent emails, [ACTION:SUMMARIZE_MAIL] to get an AI summary of what's important.
-- You CAN read Google Calendar — use [ACTION:READ_CALENDAR] with a range (today/tomorrow/this_afternoon/this_week) to list events. Use [ACTION:NEXT_EVENT] for the next upcoming event.
+- You CAN read AND write Google Calendar — use [ACTION:READ_CALENDAR] with a range (today/tomorrow/this_afternoon/this_week) to list events. Use [ACTION:NEXT_EVENT] for the next upcoming event.
 - You CAN give a full morning briefing combining calendar, reminders, and Gmail — use [ACTION:MORNING_BRIEFING]. Use when user says "give me my morning briefing", "brief me on my day", "morning briefing", etc.
 - You CAN tell the user what's coming up next (next event or reminder) — use [ACTION:WHATS_NEXT]. Use when user says "what's next", "what do I have next", "what's coming up", etc.
 - You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
@@ -253,6 +253,11 @@ When you decide the user needs something DONE (not just discussed), include an a
   "do I have anything tomorrow?" → [ACTION:READ_CALENDAR] tomorrow
   "what's this afternoon look like?" → [ACTION:READ_CALENDAR] this_afternoon
   "what's on my schedule this week?" → [ACTION:READ_CALENDAR] this_week
+- [ACTION:CREATE_CALENDAR_EVENT] title ||| YYYY-MM-DDTHH:MM:SS ||| YYYY-MM-DDTHH:MM:SS — create a new event on the user's Google Calendar. Always output ISO 8601 datetimes based on the current date ({current_time}). End time is optional — defaults to 1 hour after start. Examples:
+  "add a meeting tomorrow at 2 PM" → [ACTION:CREATE_CALENDAR_EVENT] Meeting ||| 2026-05-04T14:00:00 ||| 2026-05-04T15:00:00
+  "put a doctor appointment next Monday at 10 AM for 30 minutes" → [ACTION:CREATE_CALENDAR_EVENT] Doctor appointment ||| 2026-05-11T10:00:00 ||| 2026-05-11T10:30:00
+  "remind me to call for my pet scan tomorrow at 11" → [ACTION:CREATE_CALENDAR_EVENT] Call for pet scan ||| 2026-05-04T11:00:00 ||| 2026-05-04T11:30:00
+  IMPORTANT: Use CREATE_CALENDAR_EVENT (not SET_REMINDER) when the user says "add to calendar", "put on my calendar", "schedule", or "add an event". Use SET_REMINDER for quick time-based nudges that don't need to appear in the calendar.
 - [ACTION:NEXT_EVENT] — get the very next upcoming event from now. Use when user asks "what's my next meeting?", "what's coming up next?", "when is my next event?", etc.
 - [ACTION:SET_REMINDER] <time_expression> ||| <message> — create a timed reminder. time_expression is natural language: "in 10 minutes", "at 6 PM", "tomorrow at 9 AM". Message is what to remind about.
   "remind me in 10 minutes to stretch" → [ACTION:SET_REMINDER] in 10 minutes ||| stretch
@@ -839,7 +844,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1504,6 +1509,31 @@ async def _execute_toggle_mic(ws=None, history=None) -> str:
 # ---------------------------------------------------------------------------
 # Stream Copilot executors (Sprint 11)
 # ---------------------------------------------------------------------------
+
+async def _execute_create_calendar_event(target: str, ws=None, history=None) -> str:
+    """Parse 'title ||| start_iso ||| end_iso' and create a Google Calendar event."""
+    parts = [p.strip() for p in target.split("|||")]
+    if len(parts) < 2:
+        msg = "I need a title and time to create a calendar event, sir."
+        await _obs_speak(msg, ws)
+        return msg
+    title    = parts[0]
+    start_iso = parts[1]
+    # If end not provided, default to 1 hour after start
+    if len(parts) >= 3 and parts[2]:
+        end_iso = parts[2]
+    else:
+        try:
+            from datetime import datetime, timedelta
+            dt = datetime.fromisoformat(start_iso)
+            end_iso = (dt + timedelta(hours=1)).isoformat()
+        except Exception:
+            end_iso = start_iso  # fallback: same as start (all-day-ish)
+    description = parts[3] if len(parts) >= 4 else ""
+    _, msg = await calendar_google.create_event(title, start_iso, end_iso, description)
+    await _obs_speak(msg, ws)
+    return msg
+
 
 async def _execute_stream_prep(ws=None, history=None) -> str:
     """Run the pre-stream checklist (scene, mic, recording — does not go live)."""
@@ -2527,6 +2557,8 @@ def detect_action_fast(text: str) -> dict | None:
         "my schedule this week", "schedule this week",
         "what do i have this week", "any meetings this week",
         "upcoming meetings", "what's coming up this week", "whats coming up this week",
+        "schedule like this week", "schedule look this week", "week look like",
+        "week's schedule", "this week's schedule", "week ahead",
     ]):
         return {"action": "read_calendar", "target": "this_week"}
 
@@ -3256,6 +3288,9 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "end_stream_safe":
                             response_text = "Wrapping up the stream, sir."
                             asyncio.create_task(_execute_end_stream_safe(ws, history=history))
+                        elif _work_fast["action"] == "create_calendar_event":
+                            response_text = "Adding that to your calendar, sir."
+                            asyncio.create_task(_execute_create_calendar_event(_work_fast.get("target", ""), ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -3450,6 +3485,9 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "end_stream_safe":
                             response_text = "Wrapping up the stream, sir."
                             asyncio.create_task(_execute_end_stream_safe(ws, history=history))
+                        elif action["action"] == "create_calendar_event":
+                            response_text = "Adding that to your calendar, sir."
+                            asyncio.create_task(_execute_create_calendar_event(action.get("target", ""), ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -3653,6 +3691,8 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_panic_mode(ws, history=history))
                                 elif embedded_action["action"] == "end_stream_safe":
                                     asyncio.create_task(_execute_end_stream_safe(ws, history=history))
+                                elif embedded_action["action"] == "create_calendar_event":
+                                    asyncio.create_task(_execute_create_calendar_event(embedded_action.get("target", ""), ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
