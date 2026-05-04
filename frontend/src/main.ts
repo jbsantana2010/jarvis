@@ -9,6 +9,7 @@ import { createOrb, type OrbState } from "./orb";
 import { createVoiceInput, createAudioPlayer } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
+import { initDashboard, dashboardVoiceState, dashboardResponse } from "./dashboard";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ function updateStatus(state: State) {
 
 const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
 const orb = createOrb(canvas);
+initDashboard();
 
 const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
 const WS_URL = `${wsProto}//${window.location.host}/ws/voice`;
@@ -70,6 +72,7 @@ function transition(newState: State) {
 
   currentState = newState;
   orb.setState(newState as OrbState);
+  dashboardVoiceState(newState as "idle"|"listening"|"thinking"|"speaking");
   updateStatus(newState);
 
   switch (newState) {
@@ -185,11 +188,12 @@ socket.onMessage((msg) => {
       console.warn("[audio] empty data received, returning to idle");
       transition("idle");
     }
-    if (msg.text) console.log("[JARVIS]", msg.text);
+    if (msg.text) { console.log("[JARVIS]", msg.text); dashboardResponse(msg.text as string); }
   } else if (type === "text") {
     // Server sends {type:"text"} when Fish Audio fails — speak via browser TTS fallback
     const text = msg.text as string;
     console.log("[JARVIS text-fallback]", text);
+  if (text) dashboardResponse(text);
     if (text) {
       speakWithBrowserTts(text);
     } else {

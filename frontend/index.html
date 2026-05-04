@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <!-- Activation gate — Chrome blocks AudioContext until user gesture -->
+    <!-- Activation gate (unchanged) -->
     <div id="activation-overlay">
       <div id="activation-content">
         <div id="activation-title">J.A.R.V.I.S.</div>
@@ -15,34 +15,73 @@
       </div>
     </div>
 
+    <!-- Orb canvas: full-screen fixed, z-index 1 — untouched -->
     <canvas id="orb-canvas"></canvas>
 
-    <!-- Minimal controls — top right -->
-    <div id="controls">
-      <button id="btn-mute" title="Mute/Unmute">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" y1="19" x2="12" y2="23"/>
-        </svg>
-      </button>
-      <button id="btn-menu" title="Menu">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
-        </svg>
-      </button>
+    <!-- Dashboard overlay: z-index 5 -->
+    <div id="dashboard">
+      <!-- Left: Brain Panel — transparent so orb shows through -->
+      <div id="brain-panel">
+        <div id="brain-info">
+          <div id="state-pill" class="state-pill state-idle">IDLE</div>
+          <div class="brain-row">
+            <div class="brain-label">Last response</div>
+            <div id="last-response">Ready.</div>
+          </div>
+          <div class="brain-row">
+            <div class="brain-label">Current focus</div>
+            <div id="current-focus">—</div>
+          </div>
+          <div class="brain-row">
+            <div class="brain-label">Recent activity</div>
+            <ul id="activity-list"></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Widgets panel — solid background -->
+      <div id="widgets-panel">
+        <div id="dashboard-header">
+          <div id="dash-logo">JARVIS</div>
+          <div id="dash-state-pill" class="dash-state-pill dash-state-idle">● IDLE</div>
+          <div id="dash-spacer"></div>
+          <div id="dash-date"></div>
+          <div id="controls">
+            <button id="btn-mute" title="Mute/Unmute">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="23"/>
+              </svg>
+            </button>
+            <button id="btn-menu" title="Menu">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="widgets-scroll">
+          <div id="next-action-widget"></div>
+          <div id="spotify-widget"></div>
+          <div id="obs-widget"></div>
+          <div id="project-widget"></div>
+        </div>
+      </div>
     </div>
 
-    <!-- Dropdown menu -->
+    <!-- Dropdown menu — keep all IDs for main.ts -->
     <div id="menu-dropdown" style="display:none">
       <button id="btn-settings">Settings</button>
       <button id="btn-restart">Restart Server</button>
       <button id="btn-fix-self">Fix Yourself</button>
     </div>
 
-    <div id="status-text"></div>
-    <div id="jarvis-label">JARVIS</div>
+    <!-- Keep these elements for main.ts (hidden via CSS) -->
+    <div id="status-text" aria-hidden="true"></div>
+    <div id="jarvis-label" aria-hidden="true"></div>
     <div id="error-text"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

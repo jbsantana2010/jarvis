@@ -4589,6 +4589,121 @@ async def api_fix_self():
 
 
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dashboard API endpoints (Sprint 15)
+# ---------------------------------------------------------------------------
+
+@app.get('/api/dashboard/obs')
+async def dashboard_obs():
+    try:
+        status = await obs_controller.get_status()
+        if status is None:
+            return {'available': False, 'live': False, 'recording': False,
+                    'scene': chr(8212), 'uptime': chr(8212), 'mic_muted': False}
+        tc = status.get("stream_timecode") or ""
+        uptime = tc.split(".")[0] if tc else chr(8212)
+        return {
+            'available': True,
+            'live':      status.get('streaming', False),
+            'recording': status.get('recording', False),
+            'scene':     status.get('scene', 'unknown'),
+            'uptime':    uptime,
+            'mic_muted': False,
+        }
+    except Exception as e:
+        log.warning("dashboard_obs error: %s", e)
+        return {'available': False, 'live': False, 'recording': False,
+                'scene': chr(8212), 'uptime': chr(8212), 'mic_muted': False}
+
+@app.get('/api/dashboard/spotify')
+async def dashboard_spotify():
+    try:
+        if not spotify_controller.is_configured():
+            return {'available': False, 'active': False, 'track': 'Not configured',
+                    'artist': '--', 'progress_ms': 0, 'duration_ms': 1, 'is_playing': False}
+        def _run():
+            sp = spotify_controller._get_spotify_sync()
+            if sp in ("needs_auth", None): return None
+            try: return sp.current_playback()
+            except Exception: return None
+        current = await asyncio.to_thread(_run)
+        if current is None:
+            return {'available': True, 'active': False, 'track': 'Nothing playing',
+                    'artist': '--', 'progress_ms': 0, 'duration_ms': 1, 'is_playing': False}
+        item = current.get("item") or {}
+        artists = ", ".join(a["name"] for a in item.get("artists", []))
+        return {
+            'available':   True,
+            'active':      bool(current.get('is_playing') or item.get('name')),
+            'track':       item.get('name', 'Unknown'),
+            'artist':      artists or '--',
+            'progress_ms': current.get('progress_ms', 0),
+            'duration_ms': item.get('duration_ms', 1),
+            'is_playing':  bool(current.get('is_playing', False)),
+        }
+    except Exception as e:
+        log.warning("dashboard_spotify error: %s", e)
+        return {'available': False, 'active': False, 'track': 'Unavailable',
+                'artist': '--', 'progress_ms': 0, 'duration_ms': 1, 'is_playing': False}
+
+@app.get('/api/dashboard/projects')
+async def dashboard_projects():
+    try:
+        import sqlite3
+        db_path = project_manager.DB_PATH
+        def _query():
+            project_manager.init_db()
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT id, name, status, priority, updated_at FROM projects "
+                    "WHERE status='active' ORDER BY priority ASC, updated_at DESC LIMIT 10"
+                ).fetchall()
+                out = []
+                for pid, name, status, priority, updated_at in rows:
+                    blk = conn.execute(
+                        "SELECT COUNT(*) FROM project_blockers WHERE project_id=? AND resolved=0",
+                        (pid,)).fetchone()[0]
+                    last = conn.execute(
+                        "SELECT note FROM project_updates WHERE project_id=? ORDER BY created_at DESC LIMIT 1",
+                        (pid,)).fetchone()
+                    out.append({
+                        'id': pid, 'name': name, 'status': status,
+                        'priority': priority, 'open_blockers': blk,
+                        'last_update': project_manager._ago(updated_at) if updated_at else None,
+                    })
+                return out
+        projects = await asyncio.to_thread(_query)
+        top = projects[0]["name"] if projects else None
+        return {
+            'available': True, 'projects': projects,
+            'next_action': ('Work on: ' + top) if top else 'Run morning briefing',
+            'next_reason': '',
+        }
+    except Exception as e:
+        log.warning("dashboard_projects error: %s", e)
+        return {'available': False, 'projects': [], 'next_action': 'Run morning briefing', 'next_reason': ''}
+
+@app.post('/api/dashboard/action')
+async def dashboard_action(request: Request):
+    try:
+        body = await request.json()
+        action = body.get("action", "")
+        action_map = {
+            "morning_brief": "morning briefing", "project_standup": "project standup",
+            "focus_next": "what should I focus on", "brb_mode": "go BRB",
+            "end_stream": "end stream", "mute_mic": "toggle mic",
+            "check_email": "check email", "budget_summary": "budget summary",
+            "spotify_play": "spotify play", "spotify_pause": "spotify pause",
+            "spotify_next": "spotify skip", "spotify_prev": "spotify previous",
+        }
+        phrase = action_map.get(action, action.replace("_", " "))
+        log.info("Dashboard action: %s -> %s", action, phrase)
+        return {'ok': True, 'action': action, 'phrase': phrase}
+    except Exception as e:
+        log.warning("dashboard_action error: %s", e)
+        return {'ok': False, 'error': str(e)}
+
 # Static file serving (frontend)
 # ---------------------------------------------------------------------------
 
