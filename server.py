@@ -62,6 +62,7 @@ import search_web
 import obs_controller
 import stream_copilot
 import spotify_controller
+import budget_analyzer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -144,6 +145,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN tell the user what's coming up next (next event or reminder) — use [ACTION:WHATS_NEXT]. Use when user says "what's next", "what do I have next", "what's coming up", etc.
 - You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
+- You CAN read and analyze Juan's personal budget and debt data from local files — use [ACTION:BUDGET_SUMMARY] for a full financial snapshot (income, expenses, debt, cash flow), [ACTION:BUDGET_TOTAL_DEBT] for total debt figure, [ACTION:BUDGET_SHOW_DEBTS] for a full breakdown of all debts, [ACTION:BUDGET_PAYOFF_PLAN] for a recommended payoff strategy, [ACTION:BUDGET_HIGHEST_INTEREST] to identify the highest-APR debt, [ACTION:BUDGET_MONTHLY_DUE] for this month's minimum payments. Data comes from local Excel files — never hallucinate balances, rates, or payments. If data is missing, say so.
 - You CAN control Spotify — check what's playing, play/pause/skip/previous, adjust volume, search and play any artist/song/playlist/mood, and queue tracks. Use [ACTION:SPOTIFY_STATUS], [ACTION:SPOTIFY_PLAY], [ACTION:SPOTIFY_PAUSE], [ACTION:SPOTIFY_SKIP], [ACTION:SPOTIFY_PREVIOUS], [ACTION:SPOTIFY_VOLUME], [ACTION:SPOTIFY_PLAY_QUERY], [ACTION:SPOTIFY_QUEUE]. Requires Spotify Premium for playback control. If no active device: tell the user to open Spotify first.
 - You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
 - You CAN run high-level Stream Copilot macros that orchestrate multiple OBS actions safely: [ACTION:STREAM_PREP] (pre-stream checklist — scene + mic + recording, does NOT go live), [ACTION:GO_LIVE] (full go-live: start stream + recording + switch to gameplay scene), [ACTION:BRB_MODE] (switch to BRB scene + mute mic), [ACTION:PANIC_MODE] (emergency: cut to safe scene + mute, or end stream if configured), [ACTION:END_STREAM] (graceful wrap-up: outro scene → stop stream → stop recording).
@@ -859,7 +861,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT|SPOTIFY_STATUS|SPOTIFY_PLAY|SPOTIFY_PAUSE|SPOTIFY_SKIP|SPOTIFY_PREVIOUS|SPOTIFY_VOLUME|SPOTIFY_PLAY_QUERY|SPOTIFY_QUEUE)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT|SPOTIFY_STATUS|SPOTIFY_PLAY|SPOTIFY_PAUSE|SPOTIFY_SKIP|SPOTIFY_PREVIOUS|SPOTIFY_VOLUME|SPOTIFY_PLAY_QUERY|SPOTIFY_QUEUE|BUDGET_SUMMARY|BUDGET_TOTAL_DEBT|BUDGET_SHOW_DEBTS|BUDGET_PAYOFF_PLAN|BUDGET_HIGHEST_INTEREST|BUDGET_MONTHLY_DUE)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1630,6 +1632,38 @@ async def _execute_spotify_queue(target: str, ws=None, history=None) -> str:
     await _obs_speak(msg, ws)
     return msg
 
+# ── Budget Assistant executors (Sprint 13) ──────────────────────────────── #
+
+async def _execute_budget_summary(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_budget_summary()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_budget_total_debt(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_total_debt()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_budget_show_debts(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_show_debts()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_budget_payoff_plan(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_payoff_plan()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_budget_highest_interest(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_highest_interest()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_budget_monthly_due(ws=None, history=None) -> str:
+    _, msg = await budget_analyzer.async_monthly_due()
+    await _obs_speak(msg, ws)
+    return msg
+
 
 async def _execute_cancel_reminder(target: str, ws=None, history=None) -> str:
     """Cancel the best-matching pending reminder ([ACTION:CANCEL_REMINDER])."""
@@ -2336,6 +2370,55 @@ def detect_action_fast(text: str) -> dict | None:
     """
     t = text.lower().strip()
     words = t.split()
+
+
+    # Budget fast-path — read from local financial files
+    _BUDGET_SUMMARY_PHRASES = (
+        "budget summary", "financial summary", "how am i doing financially",
+        "summarize my debt", "summarize my debts", "debt situation",
+        "my financial situation", "how is my budget", "budget overview",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_SUMMARY_PHRASES):
+        return {"action": "budget_summary"}
+
+    _BUDGET_TOTAL_PHRASES = (
+        "total debt", "how much debt", "how much do i owe", "what is my total debt",
+        "whats my total debt", "how much do i have in debt", "total amount owed",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_TOTAL_PHRASES):
+        return {"action": "budget_total_debt"}
+
+    _BUDGET_SHOW_PHRASES = (
+        "show my debts", "list my debts", "show debts", "list debts",
+        "what debts do i have", "what are my debts", "all my debts",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_SHOW_PHRASES):
+        return {"action": "budget_show_debts"}
+
+    _BUDGET_PAYOFF_PHRASES = (
+        "payoff plan", "pay off plan", "payoff strategy", "debt payoff",
+        "give me a payoff plan", "how should i pay off", "best way to pay",
+        "which debt should i pay first", "what should i pay first",
+        "how do i pay off my debt", "debt strategy",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_PAYOFF_PHRASES):
+        return {"action": "budget_payoff_plan"}
+
+    _BUDGET_INTEREST_PHRASES = (
+        "highest interest", "which debt has the highest interest",
+        "highest apr", "most expensive debt", "worst interest rate",
+        "highest rate debt", "highest interest rate",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_INTEREST_PHRASES):
+        return {"action": "budget_highest_interest"}
+
+    _BUDGET_DUE_PHRASES = (
+        "how much do i owe this month", "monthly payments", "what is due this month",
+        "whats due this month", "monthly debt payments", "how much is due",
+        "payments due", "what do i owe monthly",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _BUDGET_DUE_PHRASES):
+        return {"action": "budget_monthly_due"}
 
     # Only trigger on SHORT, clear commands (< 14 words)
     if len(words) > 14:
@@ -3467,6 +3550,24 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "spotify_queue":
                             response_text = "Queuing that, sir."
                             asyncio.create_task(_execute_spotify_queue(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "budget_summary":
+                            response_text = "Pulling up your budget summary, sir."
+                            asyncio.create_task(_execute_budget_summary(ws, history=history))
+                        elif _work_fast["action"] == "budget_total_debt":
+                            response_text = "Checking your total debt, sir."
+                            asyncio.create_task(_execute_budget_total_debt(ws, history=history))
+                        elif _work_fast["action"] == "budget_show_debts":
+                            response_text = "Pulling up your debts, sir."
+                            asyncio.create_task(_execute_budget_show_debts(ws, history=history))
+                        elif _work_fast["action"] == "budget_payoff_plan":
+                            response_text = "Calculating your payoff strategy, sir."
+                            asyncio.create_task(_execute_budget_payoff_plan(ws, history=history))
+                        elif _work_fast["action"] == "budget_highest_interest":
+                            response_text = "Checking your highest interest debt, sir."
+                            asyncio.create_task(_execute_budget_highest_interest(ws, history=history))
+                        elif _work_fast["action"] == "budget_monthly_due":
+                            response_text = "Checking your monthly payments, sir."
+                            asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -3688,6 +3789,24 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "spotify_queue":
                             response_text = "Queuing that, sir."
                             asyncio.create_task(_execute_spotify_queue(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "budget_summary":
+                            response_text = "Pulling up your budget summary, sir."
+                            asyncio.create_task(_execute_budget_summary(ws, history=history))
+                        elif action["action"] == "budget_total_debt":
+                            response_text = "Checking your total debt, sir."
+                            asyncio.create_task(_execute_budget_total_debt(ws, history=history))
+                        elif action["action"] == "budget_show_debts":
+                            response_text = "Pulling up your debts, sir."
+                            asyncio.create_task(_execute_budget_show_debts(ws, history=history))
+                        elif action["action"] == "budget_payoff_plan":
+                            response_text = "Calculating your payoff strategy, sir."
+                            asyncio.create_task(_execute_budget_payoff_plan(ws, history=history))
+                        elif action["action"] == "budget_highest_interest":
+                            response_text = "Checking your highest interest debt, sir."
+                            asyncio.create_task(_execute_budget_highest_interest(ws, history=history))
+                        elif action["action"] == "budget_monthly_due":
+                            response_text = "Checking your monthly payments, sir."
+                            asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -3909,6 +4028,18 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_spotify_play_query(embedded_action.get("target", ""), ws, history=history))
                                 elif embedded_action["action"] == "spotify_queue":
                                     asyncio.create_task(_execute_spotify_queue(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "budget_summary":
+                                    asyncio.create_task(_execute_budget_summary(ws, history=history))
+                                elif embedded_action["action"] == "budget_total_debt":
+                                    asyncio.create_task(_execute_budget_total_debt(ws, history=history))
+                                elif embedded_action["action"] == "budget_show_debts":
+                                    asyncio.create_task(_execute_budget_show_debts(ws, history=history))
+                                elif embedded_action["action"] == "budget_payoff_plan":
+                                    asyncio.create_task(_execute_budget_payoff_plan(ws, history=history))
+                                elif embedded_action["action"] == "budget_highest_interest":
+                                    asyncio.create_task(_execute_budget_highest_interest(ws, history=history))
+                                elif embedded_action["action"] == "budget_monthly_due":
+                                    asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})

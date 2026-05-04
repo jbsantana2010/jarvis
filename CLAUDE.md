@@ -13,7 +13,7 @@ captures audio via Web Speech API → WebSocket → FastAPI backend → Anthropi
 for reasoning → Fish Audio for TTS → MP3 streamed back to browser. Falls back to
 browser-native window.speechSynthesis if Fish Audio fails.
 
-Current sprint: **Sprint 12 complete** (Spotify voice control).
+Current sprint: **Sprint 13 complete** (Budget Assistant).
 
 ---
 
@@ -421,6 +421,63 @@ open http://localhost:5173
 | 10 | Web Search via Brave API (freshness for live data); OBS Studio WebSocket control |
 | 11 | Stream Copilot macros: go_live, brb_mode, panic_mode, end_stream, stream_prep |
 | 12 | Spotify voice control: play/pause/skip/volume/search/queue via Spotify Web API |
+| 13 | Budget Assistant: read local Excel financial dashboard, answer debt/payoff questions by voice |
+
+
+---
+
+## Budget Assistant (Sprint 13)
+
+Reads Juan_Financial_Dashboard.xlsx from a local OneDrive folder and answers
+debt/budget questions by voice. Never hallucinates financial data — if the file
+is missing or a column is absent, JARVIS says so clearly.
+
+### Files
+- budget_reader.py  — loads openpyxl, parses Debts / Snapshot / Calendar sheets
+- budget_analyzer.py — calculates totals, payoff strategy, produces voice-friendly text
+
+### Budget file location
+Default: /mnt/c/Users/jbsan/OneDrive/Documents/Payoff debts/Payoff debts/
+Override: set BUDGET_FOLDER in .env
+File parsed: Juan_Financial_Dashboard.xlsx
+
+### Sheets used
+- Debts: 11 debts with priority, balance, APR, min payment, status (avalanche-ordered)
+- Snapshot: monthly income, total expenses, net cash flow, total debt, debt-to-income
+- Calendar: payment due dates with category tags
+
+### Actions
+| Action | Function called | What it says |
+|--------|----------------|-------------|
+| BUDGET_SUMMARY | async_budget_summary() | Income, outflow, deficit, total debt, interest burned, DTI |
+| BUDGET_TOTAL_DEBT | async_total_debt() | Total with top-3 by balance + min payment total |
+| BUDGET_SHOW_DEBTS | async_show_debts() | All 11 debts: name, balance, APR, minimum, status |
+| BUDGET_PAYOFF_PLAN | async_payoff_plan() | Avalanche (or snowball if no APR), top-5 targets + special flags |
+| BUDGET_HIGHEST_INTEREST | async_highest_interest() | Highest APR debt, balance, monthly cost |
+| BUDGET_MONTHLY_DUE | async_monthly_due() | Total minimums grouped by early/mid/late month |
+
+### Payoff strategy logic
+- If any debts have APR data: use avalanche (highest APR first)
+- If no APR data: use snowball (smallest balance first)
+- Always flag: 0% APR debts (kill immediately), past-due debts (catch up first)
+- Explains which method was used and why
+
+### Fast-path phrases (no LLM needed)
+- "total debt", "how much do I owe" -> BUDGET_TOTAL_DEBT
+- "show my debts", "list my debts" -> BUDGET_SHOW_DEBTS
+- "payoff plan", "debt strategy" -> BUDGET_PAYOFF_PLAN
+- "highest interest", "highest APR" -> BUDGET_HIGHEST_INTEREST
+- "monthly payments", "what is due this month" -> BUDGET_MONTHLY_DUE
+- "budget summary", "financial summary" -> BUDGET_SUMMARY
+
+### Dependencies
+- openpyxl>=3.1.0 (added to requirements.txt)
+- No OAuth, no external APIs -- pure local file access via WSL /mnt/c/ path
+
+### Common issues
+- "Budget file not found": check BUDGET_FOLDER in .env points to the .xlsx location
+- openpyxl missing: pip3 install openpyxl --break-system-packages
+- Stale data: JARVIS re-reads the file on every request (no caching)
 
 ---
 
