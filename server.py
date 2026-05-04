@@ -63,6 +63,7 @@ import obs_controller
 import stream_copilot
 import spotify_controller
 import budget_analyzer
+import project_manager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -145,6 +146,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN tell the user what's coming up next (next event or reminder) — use [ACTION:WHATS_NEXT]. Use when user says "what's next", "what do I have next", "what's coming up", etc.
 - You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
+- You CAN manage Juan's projects — track active work, log updates, flag blockers, and recommend what to focus on next. Use [ACTION:PROJECT_ADD] name (optional: ||| description ||| priority) to register a project. Use [ACTION:PROJECT_LOG] name ||| update to log progress. Use [ACTION:PROJECT_STATUS] name for a full status report. Use [ACTION:PROJECT_BLOCKER] name ||| reason to flag a blocker. Use [ACTION:PROJECT_RESOLVE_BLOCKER] name to clear a blocker. Use [ACTION:PROJECT_SET_STATUS] name ||| done/paused/active to change status. Use [ACTION:PROJECT_STANDUP] for a cross-project overview. Use [ACTION:PROJECT_FOCUS] to get an AI-reasoned recommendation on what to work on next. Use [ACTION:PROJECT_WEEKLY] for this week's accomplishments. Use [ACTION:PROJECT_UNTOUCHED] to find neglected projects. Project names support fuzzy matching — use the closest match. If a name is ambiguous (matches more than one project), ask for clarification before acting.
 - You CAN read and analyze Juan's personal budget and debt data from local files — use [ACTION:BUDGET_SUMMARY] for a full financial snapshot (income, expenses, debt, cash flow), [ACTION:BUDGET_TOTAL_DEBT] for total debt figure, [ACTION:BUDGET_SHOW_DEBTS] for a full breakdown of all debts, [ACTION:BUDGET_PAYOFF_PLAN] for a recommended payoff strategy, [ACTION:BUDGET_HIGHEST_INTEREST] to identify the highest-APR debt, [ACTION:BUDGET_MONTHLY_DUE] for this month's minimum payments. Data comes from local Excel files — never hallucinate balances, rates, or payments. If data is missing, say so.
 - You CAN control Spotify — check what's playing, play/pause/skip/previous, adjust volume, search and play any artist/song/playlist/mood, and queue tracks. Use [ACTION:SPOTIFY_STATUS], [ACTION:SPOTIFY_PLAY], [ACTION:SPOTIFY_PAUSE], [ACTION:SPOTIFY_SKIP], [ACTION:SPOTIFY_PREVIOUS], [ACTION:SPOTIFY_VOLUME], [ACTION:SPOTIFY_PLAY_QUERY], [ACTION:SPOTIFY_QUEUE]. Requires Spotify Premium for playback control. If no active device: tell the user to open Spotify first.
 - You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
@@ -861,7 +863,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT|SPOTIFY_STATUS|SPOTIFY_PLAY|SPOTIFY_PAUSE|SPOTIFY_SKIP|SPOTIFY_PREVIOUS|SPOTIFY_VOLUME|SPOTIFY_PLAY_QUERY|SPOTIFY_QUEUE|BUDGET_SUMMARY|BUDGET_TOTAL_DEBT|BUDGET_SHOW_DEBTS|BUDGET_PAYOFF_PLAN|BUDGET_HIGHEST_INTEREST|BUDGET_MONTHLY_DUE)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT|SPOTIFY_STATUS|SPOTIFY_PLAY|SPOTIFY_PAUSE|SPOTIFY_SKIP|SPOTIFY_PREVIOUS|SPOTIFY_VOLUME|SPOTIFY_PLAY_QUERY|SPOTIFY_QUEUE|BUDGET_SUMMARY|BUDGET_TOTAL_DEBT|BUDGET_SHOW_DEBTS|BUDGET_PAYOFF_PLAN|BUDGET_HIGHEST_INTEREST|BUDGET_MONTHLY_DUE|PROJECT_ADD|PROJECT_STATUS|PROJECT_LOG|PROJECT_BLOCKER|PROJECT_RESOLVE_BLOCKER|PROJECT_SET_STATUS|PROJECT_STANDUP|PROJECT_FOCUS|PROJECT_WEEKLY|PROJECT_UNTOUCHED)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1351,6 +1353,10 @@ async def _execute_web_search(query: str, ws=None, history=None):
 async def _execute_morning_briefing(ws=None, history=None):
     """Gather calendar + reminders + mail and speak a morning briefing."""
     msg = await briefing.build_morning_briefing(anthropic_client)
+    # Append project snapshot if any active projects exist
+    _proj_snap = project_manager.get_projects_snapshot()
+    if _proj_snap:
+        msg = msg.rstrip(".") + ". " + _proj_snap
     await _speak_result(msg, "morning_briefing", ws, history)
 
 
@@ -1661,6 +1667,127 @@ async def _execute_budget_highest_interest(ws=None, history=None) -> str:
 
 async def _execute_budget_monthly_due(ws=None, history=None) -> str:
     _, msg = await budget_analyzer.async_monthly_due()
+    await _obs_speak(msg, ws)
+    return msg
+
+# ── Project Management executors (Sprint 14) ────────────────────────────── #
+
+async def _execute_project_add(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_ADD] name [||| description] [||| priority]"""
+    parts = [p.strip() for p in target.split("|||")]
+    name = parts[0] if parts else target.strip()
+    description = parts[1] if len(parts) > 1 else ""
+    priority_word = parts[2].lower() if len(parts) > 2 else "medium"
+    priority = project_manager.PRIORITY_FROM_WORD.get(priority_word, project_manager.PRIORITY_MEDIUM)
+    _, msg = await project_manager.async_add_project(name, description, priority)
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_status(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_STATUS] project_name"""
+    _, msg = await project_manager.async_get_project_status(target.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_log(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_LOG] project_name ||| update note"""
+    if "|||" in target:
+        name_part, note_part = target.split("|||", 1)
+    else:
+        # Try to infer from context — fallback: treat whole thing as error
+        await _obs_speak("Please tell me which project and what to log, sir. Try: log update on project name colon note.", ws)
+        return ""
+    _, msg = await project_manager.async_log_update(name_part.strip(), note_part.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_blocker(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_BLOCKER] project_name ||| blocker description"""
+    if "|||" in target:
+        name_part, desc_part = target.split("|||", 1)
+    else:
+        await _obs_speak("Tell me the project and what's blocking it, sir.", ws)
+        return ""
+    _, msg = await project_manager.async_add_blocker(name_part.strip(), desc_part.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_resolve_blocker(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_RESOLVE_BLOCKER] project_name [||| blocker description]"""
+    parts = [p.strip() for p in target.split("|||")]
+    name_part = parts[0]
+    blocker_q = parts[1] if len(parts) > 1 else ""
+    _, msg = await project_manager.async_resolve_blocker(name_part, blocker_q)
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_set_status(target: str, ws=None, history=None) -> str:
+    """[ACTION:PROJECT_SET_STATUS] project_name ||| status"""
+    if "|||" in target:
+        name_part, status_part = target.split("|||", 1)
+    else:
+        await _obs_speak("Tell me the project and the new status, sir.", ws)
+        return ""
+    _, msg = await project_manager.async_set_project_status(name_part.strip(), status_part.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_standup(ws=None, history=None) -> str:
+    """[ACTION:PROJECT_STANDUP] — cross-project status overview"""
+    _, msg = await project_manager.async_get_standup()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_focus(ws=None, history=None) -> str:
+    """[ACTION:PROJECT_FOCUS] — Claude-reasoned recommendation on what to work on next."""
+    context = project_manager.build_focus_context()
+    if not anthropic_client:
+        await _obs_speak("Anthropic client not available, sir. Here is the raw project list: " + context, ws)
+        return context
+    now_str = __import__('datetime').datetime.now().strftime("%A %I:%M %p")
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=(
+                "You are JARVIS, a crisp British AI butler helping Juan prioritize. "
+                "Given his active projects below, recommend exactly ONE thing he should work on next. "
+                "Be specific and decisive. 2-3 sentences max. No markdown. Address him as 'sir'. "
+                "If a project is blocked, skip it unless unblocking it is the priority."
+            ),
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Current time: {now_str}\n\n"
+                    f"Active projects:\n{context}\n\n"
+                    "What should I work on next?"
+                )
+            }],
+        )
+        msg = resp.content[0].text.strip()
+    except Exception as e:
+        msg = f"Could not get focus recommendation, sir: {e}"
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_weekly(ws=None, history=None) -> str:
+    """[ACTION:PROJECT_WEEKLY] — weekly accomplishment digest"""
+    _, msg = await project_manager.async_get_weekly_digest()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+async def _execute_project_untouched(ws=None, history=None) -> str:
+    """[ACTION:PROJECT_UNTOUCHED] — projects not touched recently"""
+    _, msg = await project_manager.async_get_untouched_projects()
     await _obs_speak(msg, ws)
     return msg
 
@@ -2371,6 +2498,79 @@ def detect_action_fast(text: str) -> dict | None:
     t = text.lower().strip()
     words = t.split()
 
+
+    # Project management fast-path
+    _PROJ_STANDUP_PHRASES = (
+        "project standup", "how are my projects", "project status overview",
+        "all projects", "show all projects", "list my projects",
+        "project overview", "projects status",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _PROJ_STANDUP_PHRASES):
+        return {"action": "project_standup"}
+
+    _PROJ_FOCUS_PHRASES = (
+        "what should i work on", "what should i do next", "what should i focus on",
+        "what to work on next", "what to work on", "help me prioritize",
+        "what project should i", "recommend what to work on",
+        "what is my next priority", "whats my next priority",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _PROJ_FOCUS_PHRASES):
+        return {"action": "project_focus"}
+
+    _PROJ_WEEKLY_PHRASES = (
+        "what did i accomplish this week", "weekly digest", "weekly summary",
+        "what have i done this week", "what got done this week",
+        "weekly accomplishments", "what did i get done",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _PROJ_WEEKLY_PHRASES):
+        return {"action": "project_weekly"}
+
+    _PROJ_UNTOUCHED_PHRASES = (
+        "what projects haven't i touched", "what projects have i neglected",
+        "which projects are stale", "projects i haven't worked on",
+        "neglected projects", "stale projects",
+    )
+    if any(t == ph or t.startswith(ph) for ph in _PROJ_UNTOUCHED_PHRASES):
+        return {"action": "project_untouched"}
+
+    # "add project X" / "start tracking X"
+    for _pfx in ("add project ", "start tracking ", "track project ", "new project "):
+        if t.startswith(_pfx):
+            _pname = text[len(_pfx):].strip()
+            if _pname:
+                return {"action": "project_add", "target": _pname}
+
+    # "status of X" / "what is the status of X"
+    for _pfx in ("status of ", "what is the status of ", "whats the status of ",
+                 "project status ", "how is project ", "how is "):
+        if t.startswith(_pfx):
+            _pname = text[len(_pfx):].strip()
+            if _pname:
+                return {"action": "project_status", "target": _pname}
+
+    # "mark X as done/paused/active"
+    import re as _re
+    _status_match = _re.match(r"mark (.+?) as (done|paused|active|complete|finished|reactivate[d]?)", t)
+    if _status_match:
+        _pname = _status_match.group(1).strip()
+        _status_word = _status_match.group(2).replace("complete", "done").replace("finished", "done").replace("reactivated", "active")
+        return {"action": "project_set_status", "target": f"{_pname} ||| {_status_word}"}
+
+    # "X is blocked on Y"
+    _blocked_match = _re.match(r"(.+?) is blocked (?:on|by) (.+)", t)
+    if _blocked_match and len(t.split()) <= 12:
+        _pname = _blocked_match.group(1).strip()
+        _reason = text[len(_blocked_match.group(1)) + len(" is blocked on "):].strip()
+        if not _reason:
+            _reason = _blocked_match.group(2).strip()
+        return {"action": "project_blocker", "target": f"{_pname} ||| {_reason}"}
+
+    # "log update on X: Y" or "log update on X colon Y"
+    _log_match = _re.match(r"log (?:update )?on (.+?)[::](.+)", t)
+    if _log_match:
+        _pname = _log_match.group(1).strip()
+        _note = text[text.lower().index(_log_match.group(1)) + len(_log_match.group(1)):].lstrip(": ").strip()
+        return {"action": "project_log", "target": f"{_pname} ||| {_note}"}
 
     # Budget fast-path — read from local financial files
     _BUDGET_SUMMARY_PHRASES = (
@@ -3568,6 +3768,36 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "budget_monthly_due":
                             response_text = "Checking your monthly payments, sir."
                             asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
+                        elif _work_fast["action"] == "project_add":
+                            response_text = "Adding that project, sir."
+                            asyncio.create_task(_execute_project_add(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_status":
+                            response_text = "Pulling up that project, sir."
+                            asyncio.create_task(_execute_project_status(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_log":
+                            response_text = "Logged, sir."
+                            asyncio.create_task(_execute_project_log(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_blocker":
+                            response_text = "Blocker noted, sir."
+                            asyncio.create_task(_execute_project_blocker(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_resolve_blocker":
+                            response_text = "Resolving that blocker, sir."
+                            asyncio.create_task(_execute_project_resolve_blocker(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_set_status":
+                            response_text = "Updating project status, sir."
+                            asyncio.create_task(_execute_project_set_status(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "project_standup":
+                            response_text = "Running your project standup, sir."
+                            asyncio.create_task(_execute_project_standup(ws, history=history))
+                        elif _work_fast["action"] == "project_focus":
+                            response_text = "Let me think about that, sir."
+                            asyncio.create_task(_execute_project_focus(ws, history=history))
+                        elif _work_fast["action"] == "project_weekly":
+                            response_text = "Here is your weekly digest, sir."
+                            asyncio.create_task(_execute_project_weekly(ws, history=history))
+                        elif _work_fast["action"] == "project_untouched":
+                            response_text = "Checking neglected projects, sir."
+                            asyncio.create_task(_execute_project_untouched(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -3807,6 +4037,36 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "budget_monthly_due":
                             response_text = "Checking your monthly payments, sir."
                             asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
+                        elif action["action"] == "project_add":
+                            response_text = "Adding that project, sir."
+                            asyncio.create_task(_execute_project_add(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_status":
+                            response_text = "Pulling up that project, sir."
+                            asyncio.create_task(_execute_project_status(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_log":
+                            response_text = "Logged, sir."
+                            asyncio.create_task(_execute_project_log(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_blocker":
+                            response_text = "Blocker noted, sir."
+                            asyncio.create_task(_execute_project_blocker(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_resolve_blocker":
+                            response_text = "Resolving that blocker, sir."
+                            asyncio.create_task(_execute_project_resolve_blocker(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_set_status":
+                            response_text = "Updating project status, sir."
+                            asyncio.create_task(_execute_project_set_status(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "project_standup":
+                            response_text = "Running your project standup, sir."
+                            asyncio.create_task(_execute_project_standup(ws, history=history))
+                        elif action["action"] == "project_focus":
+                            response_text = "Let me think about that, sir."
+                            asyncio.create_task(_execute_project_focus(ws, history=history))
+                        elif action["action"] == "project_weekly":
+                            response_text = "Here is your weekly digest, sir."
+                            asyncio.create_task(_execute_project_weekly(ws, history=history))
+                        elif action["action"] == "project_untouched":
+                            response_text = "Checking neglected projects, sir."
+                            asyncio.create_task(_execute_project_untouched(ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -4040,6 +4300,26 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_budget_highest_interest(ws, history=history))
                                 elif embedded_action["action"] == "budget_monthly_due":
                                     asyncio.create_task(_execute_budget_monthly_due(ws, history=history))
+                                elif embedded_action["action"] == "project_add":
+                                    asyncio.create_task(_execute_project_add(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_status":
+                                    asyncio.create_task(_execute_project_status(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_log":
+                                    asyncio.create_task(_execute_project_log(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_blocker":
+                                    asyncio.create_task(_execute_project_blocker(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_resolve_blocker":
+                                    asyncio.create_task(_execute_project_resolve_blocker(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_set_status":
+                                    asyncio.create_task(_execute_project_set_status(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "project_standup":
+                                    asyncio.create_task(_execute_project_standup(ws, history=history))
+                                elif embedded_action["action"] == "project_focus":
+                                    asyncio.create_task(_execute_project_focus(ws, history=history))
+                                elif embedded_action["action"] == "project_weekly":
+                                    asyncio.create_task(_execute_project_weekly(ws, history=history))
+                                elif embedded_action["action"] == "project_untouched":
+                                    asyncio.create_task(_execute_project_untouched(ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})

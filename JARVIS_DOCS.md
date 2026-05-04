@@ -65,6 +65,15 @@ JARVIS is a voice-first AI assistant that runs on your Windows PC (via WSL). You
 - Queue a specific track
 - Ask what is currently playing
 
+**Project Management**
+- Track any number of active projects with name, priority, and status
+- Log voice updates to a project ("log update on JARVIS: finished sprint 14")
+- Flag blockers and resolve them by voice
+- Get a cross-project standup in seconds
+- Ask JARVIS what you should work on next — it reasons across priorities, blockers, and recent activity
+- Weekly digest: what you accomplished across all projects this week
+- Find projects you haven't touched in a while
+
 **Developer Tools**
 - Start a work session (routes speech to Claude Code for coding help)
 - Dispatch tasks to Claude Code projects by name
@@ -275,6 +284,11 @@ JARVIS understands context and paraphrase.
 | "Panic" / "Emergency" | Safe scene + mute mic (+ stop stream if configured) |
 | "End the stream" / "Stream outro" | Ending scene → pause → stop stream + recording |
 
+### Project Tracking
+- No setup required — DB is created automatically at ~/.jarvis/projects.db on first use
+- Project names support fuzzy matching: say "jarvis" and it finds "JARVIS"
+- Ambiguous names (matching 2+ projects) are flagged — JARVIS will ask you to be more specific
+
 ### Spotify
 | Say something like... | What happens |
 |----------------------|-------------|
@@ -290,6 +304,23 @@ JARVIS understands context and paraphrase.
 | "Queue Bohemian Rhapsody" | Adds track to queue |
 | "Play something chill" | Plays a chill vibes playlist |
 | "Play focus music" | Plays a deep focus playlist |
+
+### Project Management
+| Say something like... | What happens |
+|----------------------|-------------|
+| "Add project JARVIS" | Registers JARVIS as a new active project |
+| "Add project Budget Tracker, high priority" | Adds with high priority |
+| "Start tracking my new app" | Same as add project |
+| "Log update on JARVIS: finished the voice commands" | Appends a timestamped note |
+| "What's the status of JARVIS?" | Full status: priority, last update, blockers |
+| "Project standup" | All active projects with last update and blockers |
+| "What should I work on next?" | AI recommends one specific next action |
+| "JARVIS is blocked on needing a Spotify test" | Logs blocker |
+| "Resolve blocker on JARVIS" | Clears the open blocker |
+| "Mark Budget Tracker as done" | Sets project to complete |
+| "Mark JARVIS as paused" | Pauses a project |
+| "What did I accomplish this week?" | Weekly digest from all logged updates |
+| "What projects haven't I touched?" | Lists neglected projects |
 
 ### Developer / Work Mode
 | Say... | What happens |
@@ -324,6 +355,11 @@ JARVIS understands context and paraphrase.
 - Sign up at api.search.brave.com (free tier available)
 - Add key to BRAVE_SEARCH_API_KEY in .env
 - Do NOT comment out the key with # — it must be an active line
+
+### Project Tracking
+- No setup required — DB is created automatically at ~/.jarvis/projects.db on first use
+- Project names support fuzzy matching: say "jarvis" and it finds "JARVIS"
+- Ambiguous names (matching 2+ projects) are flagged — JARVIS will ask you to be more specific
 
 ### Spotify
 - Spotify desktop app must be open and signed in
@@ -427,10 +463,12 @@ Hard (STREAM_PANIC_STOPS_STREAM=true): Also stops the stream immediately
 
 ---
 
-## 9. Sprint 13 Recommendation: Budget Assistant
+## 9. Sprint 15 Recommendation: Budget + Project Intelligence Enhancements
 
-### Goal
-Let JARVIS read, analyze, and help manage your personal budget files so you can
+### Completed
+Sprints 13 and 14 are done. Sprint 13 added budget analysis from your local Excel file. Sprint 14 added full project management intelligence.
+
+### Sprint 15 Ideas so you can
 ask questions like "how much do I owe on my car loan?" or "what is my total debt?"
 and get instant spoken answers.
 

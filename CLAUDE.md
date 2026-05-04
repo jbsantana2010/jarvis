@@ -13,7 +13,7 @@ captures audio via Web Speech API → WebSocket → FastAPI backend → Anthropi
 for reasoning → Fish Audio for TTS → MP3 streamed back to browser. Falls back to
 browser-native window.speechSynthesis if Fish Audio fails.
 
-Current sprint: **Sprint 13 complete** (Budget Assistant).
+Current sprint: **Sprint 14 complete** (Project Management Intelligence).
 
 ---
 
@@ -422,7 +422,71 @@ open http://localhost:5173
 | 11 | Stream Copilot macros: go_live, brb_mode, panic_mode, end_stream, stream_prep |
 | 12 | Spotify voice control: play/pause/skip/volume/search/queue via Spotify Web API |
 | 13 | Budget Assistant: read local Excel financial dashboard, answer debt/payoff questions by voice |
+| 14 | Project Management Intelligence: track projects, log updates, blockers, standup, focus recommendation |
 
+
+
+---
+
+## Project Management (Sprint 14)
+
+project_manager.py manages a local SQLite DB at ~/.jarvis/projects.db.
+No external dependencies. Schema designed for future export/sync.
+
+### Schema
+  projects         -- id, name, status (active/paused/done), priority (1/2/3), description, created_at, updated_at
+  project_updates  -- append-only log: id, project_id, note, created_at
+  project_blockers -- id, project_id, description, resolved (0/1), created_at, resolved_at
+
+### Fuzzy name matching (4 tiers)
+  1. Exact case-insensitive match
+  2. Starts-with match
+  3. Substring match
+  4. difflib close match (cutoff 0.55)
+  Fails clearly if multiple projects match at the same tier.
+
+### Actions
+| Action | Target format | What it does |
+|--------|--------------|-------------|
+| PROJECT_ADD | name [||| description ||| priority] | Register new project |
+| PROJECT_STATUS | project_name | Full status: priority, last update, blockers, update count |
+| PROJECT_LOG | project_name ||| note | Append timestamped update |
+| PROJECT_BLOCKER | project_name ||| reason | Add open blocker |
+| PROJECT_RESOLVE_BLOCKER | project_name [||| blocker_query] | Mark best-matching blocker resolved |
+| PROJECT_SET_STATUS | project_name ||| done/paused/active | Change project status |
+| PROJECT_STANDUP | (none) | All active projects: last update + blockers, grouped by priority |
+| PROJECT_FOCUS | (none) | Haiku-powered recommendation of what to work on next |
+| PROJECT_WEEKLY | (none) | All updates logged in the past 7 days, grouped by project |
+| PROJECT_UNTOUCHED | (none) | Active projects not touched in last 5 days |
+
+### Focus recommendation (PROJECT_FOCUS)
+Uses claude-haiku to reason over:
+  - All active project names, priorities, last update timestamps
+  - Open blockers (blocked projects are skipped unless unblocking is the priority)
+  - Current time of day
+Returns a decisive 2-3 sentence spoken recommendation.
+
+### Morning briefing integration
+build_morning_briefing() appends get_projects_snapshot() to its output
+if any active projects exist. Snapshot is one line: "N active projects,
+M blocked — top priority: ProjectName."
+
+### Fast-path voice triggers (no LLM round-trip)
+  "add project X" / "start tracking X"     → PROJECT_ADD
+  "status of X" / "how is project X"        → PROJECT_STATUS
+  "log update on X: note"                   → PROJECT_LOG
+  "X is blocked on reason"                  → PROJECT_BLOCKER
+  "mark X as done/paused/active"            → PROJECT_SET_STATUS
+  "project standup" / "how are my projects" → PROJECT_STANDUP
+  "what should I work on next"              → PROJECT_FOCUS
+  "what did I accomplish this week"         → PROJECT_WEEKLY
+  "what projects haven't I touched"         → PROJECT_UNTOUCHED
+
+### Priority values
+  1 = high (urgent/critical/important)
+  2 = medium (default)
+  3 = low (someday)
+  Specified by word when adding: "add project X high priority"
 
 ---
 
