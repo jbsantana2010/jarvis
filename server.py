@@ -61,6 +61,7 @@ import briefing
 import search_web
 import obs_controller
 import stream_copilot
+import spotify_controller
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("jarvis")
@@ -143,6 +144,7 @@ YOUR CAPABILITIES (these are REAL and ACTIVE — you CAN do all of these RIGHT N
 - You CAN tell the user what's coming up next (next event or reminder) — use [ACTION:WHATS_NEXT]. Use when user says "what's next", "what do I have next", "what's coming up", etc.
 - You CAN give a daily overview / focus summary — use [ACTION:DAILY_OVERVIEW]. Use when user says "what should I focus on today", "what's on my plate", "what does my day look like", etc.
 - You CAN create and fully manage reminders — set, list, cancel, snooze, and create recurring reminders. Use [ACTION:SET_REMINDER], [ACTION:LIST_REMINDERS], [ACTION:CANCEL_REMINDER], and [ACTION:SNOOZE_REMINDER].
+- You CAN control Spotify — check what's playing, play/pause/skip/previous, adjust volume, search and play any artist/song/playlist/mood, and queue tracks. Use [ACTION:SPOTIFY_STATUS], [ACTION:SPOTIFY_PLAY], [ACTION:SPOTIFY_PAUSE], [ACTION:SPOTIFY_SKIP], [ACTION:SPOTIFY_PREVIOUS], [ACTION:SPOTIFY_VOLUME], [ACTION:SPOTIFY_PLAY_QUERY], [ACTION:SPOTIFY_QUEUE]. Requires Spotify Premium for playback control. If no active device: tell the user to open Spotify first.
 - You CAN control OBS Studio — check stream status, start/stop stream, start/stop recording, switch scenes (fuzzy match), list scenes, and mute/unmute mic. Use [ACTION:OBS_STATUS], [ACTION:START_STREAM], [ACTION:STOP_STREAM], [ACTION:START_RECORDING], [ACTION:STOP_RECORDING], [ACTION:SWITCH_SCENE], [ACTION:LIST_SCENES], [ACTION:TOGGLE_MIC].
 - You CAN run high-level Stream Copilot macros that orchestrate multiple OBS actions safely: [ACTION:STREAM_PREP] (pre-stream checklist — scene + mic + recording, does NOT go live), [ACTION:GO_LIVE] (full go-live: start stream + recording + switch to gameplay scene), [ACTION:BRB_MODE] (switch to BRB scene + mute mic), [ACTION:PANIC_MODE] (emergency: cut to safe scene + mute, or end stream if configured), [ACTION:END_STREAM] (graceful wrap-up: outro scene → stop stream → stop recording).
 
@@ -274,6 +276,19 @@ When you decide the user needs something DONE (not just discussed), include an a
   "remind me every day at 8 AM to check email" → [ACTION:SET_REMINDER] every day at 8 AM ||| check email
   "remind me every weekday at 9 AM for standup" → [ACTION:SET_REMINDER] every weekday at 9 AM ||| standup
   "remind me every monday at 6 PM for team meeting" → [ACTION:SET_REMINDER] every monday at 6 PM ||| team meeting
+- [ACTION:SPOTIFY_STATUS] — what's currently playing on Spotify. Use for "what's playing", "what song is this", "what's on Spotify".
+- [ACTION:SPOTIFY_PLAY] — resume Spotify playback. Use for "play", "resume music", "unpause".
+- [ACTION:SPOTIFY_PAUSE] — pause Spotify. Use for "pause", "pause music", "stop the music".
+- [ACTION:SPOTIFY_SKIP] — skip to next track. Use for "skip", "next song", "next track".
+- [ACTION:SPOTIFY_PREVIOUS] — go to previous track. Use for "previous song", "go back", "last song".
+- [ACTION:SPOTIFY_VOLUME] amount — set volume. amount = "up", "down", or 0-100. Use for "volume up", "turn it down", "set volume to 60".
+  "volume up" → [ACTION:SPOTIFY_VOLUME] up
+  "set volume to 40" → [ACTION:SPOTIFY_VOLUME] 40
+- [ACTION:SPOTIFY_PLAY_QUERY] query — search and play an artist, song, playlist, or mood. Use for "play Bad Bunny", "play something chill", "play focus music", "play lofi".
+  "play Bad Bunny" → [ACTION:SPOTIFY_PLAY_QUERY] Bad Bunny
+  "play something chill" → [ACTION:SPOTIFY_PLAY_QUERY] something chill
+  "play focus music" → [ACTION:SPOTIFY_PLAY_QUERY] focus music
+- [ACTION:SPOTIFY_QUEUE] query — search for a track and add it to the queue. Use for "queue this song", "add X to queue".
 - [ACTION:STREAM_PREP] — pre-stream checklist: switch to starting scene, unmute mic, start recording. Does NOT go live. Use when user says "stream prep", "get ready to stream", "prepare the stream", "set up stream".
 - [ACTION:GO_LIVE] — full go-live macro: starts stream + recording, then switches to gameplay scene. Use when user says "go live", "begin streaming". For a plain stream start without scene orchestration, use START_STREAM.
 - [ACTION:BRB_MODE] — switch to BRB scene and mute mic. Use when user says "brb", "be right back", "going on break", "stepping away", "going brb".
@@ -844,7 +859,7 @@ def extract_action(response: str) -> tuple[str, dict | None]:
     Returns (clean_text_for_tts, action_dict_or_none).
     """
     match = _action_re.search(
-        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT)\]\s*(.*?)$',
+        r'\[ACTION:(BUILD|BROWSE|RESEARCH|OPEN_TERMINAL|OPEN_APP|WEATHER|PROMPT_PROJECT|ADD_TASK|ADD_NOTE|COMPLETE_TASK|REMEMBER|CREATE_NOTE|READ_NOTE|SCREEN|READ_CLIPBOARD|WRITE_CLIPBOARD|READ_MAIL|SUMMARIZE_MAIL|READ_CALENDAR|NEXT_EVENT|MORNING_BRIEFING|WHATS_NEXT|DAILY_OVERVIEW|WEB_SEARCH|SET_REMINDER|LIST_REMINDERS|CANCEL_REMINDER|SNOOZE_REMINDER|OBS_STATUS|START_STREAM|STOP_STREAM|START_RECORDING|STOP_RECORDING|SWITCH_SCENE|LIST_SCENES|TOGGLE_MIC|STREAM_PREP|GO_LIVE|BRB_MODE|PANIC_MODE|END_STREAM|CREATE_CALENDAR_EVENT|SPOTIFY_STATUS|SPOTIFY_PLAY|SPOTIFY_PAUSE|SPOTIFY_SKIP|SPOTIFY_PREVIOUS|SPOTIFY_VOLUME|SPOTIFY_PLAY_QUERY|SPOTIFY_QUEUE)\]\s*(.*?)$',
         response, _action_re.DOTALL,
     )
     if match:
@@ -1566,6 +1581,52 @@ async def _execute_panic_mode(ws=None, history=None) -> str:
 async def _execute_end_stream_safe(ws=None, history=None) -> str:
     """Graceful stream end: outro scene → stop stream → stop recording."""
     _, msg = await stream_copilot.end_stream_safe()
+    await _obs_speak(msg, ws)
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# Spotify executors (Sprint 12)
+# ---------------------------------------------------------------------------
+
+async def _execute_spotify_status(ws=None, history=None) -> str:
+    _, msg = await spotify_controller.get_status()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_play(ws=None, history=None) -> str:
+    _, msg = await spotify_controller.play()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_pause(ws=None, history=None) -> str:
+    _, msg = await spotify_controller.pause()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_skip(ws=None, history=None) -> str:
+    _, msg = await spotify_controller.skip()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_previous(ws=None, history=None) -> str:
+    _, msg = await spotify_controller.previous()
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_volume(target: str, ws=None, history=None) -> str:
+    amount = target.strip() or "up"
+    _, msg = await spotify_controller.set_volume(amount)
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_play_query(target: str, ws=None, history=None) -> str:
+    _, msg = await spotify_controller.play_query(target.strip())
+    await _obs_speak(msg, ws)
+    return msg
+
+async def _execute_spotify_queue(target: str, ws=None, history=None) -> str:
+    _, msg = await spotify_controller.queue_query(target.strip())
     await _obs_speak(msg, ws)
     return msg
 
@@ -2397,6 +2458,87 @@ def detect_action_fast(text: str) -> dict | None:
         m_snooze = re.search(r'(?:for|in)\s+(\d+\s+(?:second|minute|min|hour|hr)\w*)', t)
         duration = m_snooze.group(1).strip() if m_snooze else "10 minutes"
         return {"action": "snooze_reminder", "target": duration}
+
+    # Spotify — what's playing
+    if any(p in t for p in [
+        "what's playing", "whats playing", "what song is this",
+        "what is this song", "what are you playing", "spotify status",
+        "what's on spotify", "whats on spotify",
+    ]):
+        return {"action": "spotify_status"}
+
+    # Spotify — play query (artist / mood / genre — must come before generic "play")
+    _SPOTIFY_PLAY_PREFIXES = (
+        "play some ", "play something ", "play a ", "play the ",
+        "put on some ", "put on ", "play me some ",
+    )
+    for _sp in _SPOTIFY_PLAY_PREFIXES:
+        if t.startswith(_sp):
+            _sq = text[len(_sp):].strip()
+            if _sq:
+                return {"action": "spotify_play_query", "target": _sq}
+            break
+
+    # Named artist / playlist (e.g. "play Bad Bunny", "play lofi")
+    _PLAY_RE_TRIGGERS = ("play ", )
+    for _pr in _PLAY_RE_TRIGGERS:
+        if t.startswith(_pr):
+            _sq = text[len(_pr):].strip()
+            # Only hijack if it looks like a music query, not an OBS/app action
+            _non_music = ("obs", "stream", "recording", "scene", "discord", "spotify app")
+            if _sq and not any(nm in _sq.lower() for nm in _non_music):
+                return {"action": "spotify_play_query", "target": _sq}
+            break
+
+    # Spotify — resume playback
+    if any(p in t for p in [
+        "resume spotify", "resume music", "resume playback",
+        "unpause spotify", "unpause music", "continue music",
+        "continue spotify",
+    ]):
+        return {"action": "spotify_play"}
+
+    # Spotify — pause
+    if any(p in t for p in [
+        "pause spotify", "pause music", "pause the music",
+        "pause the song", "stop the music", "stop spotify",
+        "mute spotify", "mute music",
+    ]):
+        return {"action": "spotify_pause"}
+
+    # Spotify — skip
+    if any(p in t for p in [
+        "skip", "next song", "next track", "skip this", "skip song",
+        "next please", "skip this song", "skip this track",
+    ]):
+        return {"action": "spotify_skip"}
+
+    # Spotify — previous
+    if any(p in t for p in [
+        "previous song", "previous track", "go back", "last song",
+        "play that again", "replay this", "back a song",
+    ]):
+        return {"action": "spotify_previous"}
+
+    # Spotify — volume
+    if any(p in t for p in ["volume up", "turn it up", "louder", "increase volume"]):
+        return {"action": "spotify_volume", "target": "up"}
+    if any(p in t for p in ["volume down", "turn it down", "quieter", "lower volume", "decrease volume"]):
+        return {"action": "spotify_volume", "target": "down"}
+    if t.startswith("set volume to ") or t.startswith("volume "):
+        import re as _re_vol
+        m = _re_vol.search(r'(\d+)', t)
+        if m:
+            return {"action": "spotify_volume", "target": m.group(1)}
+
+    # Spotify — queue
+    _QUEUE_PREFIXES = ("queue ", "add to queue ", "queue up ", "add ")
+    for _qp in _QUEUE_PREFIXES:
+        if t.startswith(_qp):
+            _qt = text[len(_qp):].strip()
+            if _qt:
+                return {"action": "spotify_queue", "target": _qt}
+            break
 
     # OBS — status fast path
     if any(p in t for p in [
@@ -3291,6 +3433,30 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "create_calendar_event":
                             response_text = "Adding that to your calendar, sir."
                             asyncio.create_task(_execute_create_calendar_event(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "spotify_status":
+                            response_text = "Checking Spotify, sir."
+                            asyncio.create_task(_execute_spotify_status(ws, history=history))
+                        elif _work_fast["action"] == "spotify_play":
+                            response_text = "Resuming, sir."
+                            asyncio.create_task(_execute_spotify_play(ws, history=history))
+                        elif _work_fast["action"] == "spotify_pause":
+                            response_text = "Pausing, sir."
+                            asyncio.create_task(_execute_spotify_pause(ws, history=history))
+                        elif _work_fast["action"] == "spotify_skip":
+                            response_text = "Skipping, sir."
+                            asyncio.create_task(_execute_spotify_skip(ws, history=history))
+                        elif _work_fast["action"] == "spotify_previous":
+                            response_text = "Going back, sir."
+                            asyncio.create_task(_execute_spotify_previous(ws, history=history))
+                        elif _work_fast["action"] == "spotify_volume":
+                            response_text = "Adjusting volume, sir."
+                            asyncio.create_task(_execute_spotify_volume(_work_fast.get("target", "up"), ws, history=history))
+                        elif _work_fast["action"] == "spotify_play_query":
+                            response_text = "On it, sir."
+                            asyncio.create_task(_execute_spotify_play_query(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "spotify_queue":
+                            response_text = "Queuing that, sir."
+                            asyncio.create_task(_execute_spotify_queue(_work_fast.get("target", ""), ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(
@@ -3488,6 +3654,30 @@ async def voice_handler(ws: WebSocket):
                         elif action["action"] == "create_calendar_event":
                             response_text = "Adding that to your calendar, sir."
                             asyncio.create_task(_execute_create_calendar_event(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "spotify_status":
+                            response_text = "Checking Spotify, sir."
+                            asyncio.create_task(_execute_spotify_status(ws, history=history))
+                        elif action["action"] == "spotify_play":
+                            response_text = "Resuming, sir."
+                            asyncio.create_task(_execute_spotify_play(ws, history=history))
+                        elif action["action"] == "spotify_pause":
+                            response_text = "Pausing, sir."
+                            asyncio.create_task(_execute_spotify_pause(ws, history=history))
+                        elif action["action"] == "spotify_skip":
+                            response_text = "Skipping, sir."
+                            asyncio.create_task(_execute_spotify_skip(ws, history=history))
+                        elif action["action"] == "spotify_previous":
+                            response_text = "Going back, sir."
+                            asyncio.create_task(_execute_spotify_previous(ws, history=history))
+                        elif action["action"] == "spotify_volume":
+                            response_text = "Adjusting volume, sir."
+                            asyncio.create_task(_execute_spotify_volume(action.get("target", "up"), ws, history=history))
+                        elif action["action"] == "spotify_play_query":
+                            response_text = "On it, sir."
+                            asyncio.create_task(_execute_spotify_play_query(action.get("target", ""), ws, history=history))
+                        elif action["action"] == "spotify_queue":
+                            response_text = "Queuing that, sir."
+                            asyncio.create_task(_execute_spotify_queue(action.get("target", ""), ws, history=history))
                         else:
                             response_text = "Understood, sir."
                     else:
@@ -3693,6 +3883,22 @@ async def voice_handler(ws: WebSocket):
                                     asyncio.create_task(_execute_end_stream_safe(ws, history=history))
                                 elif embedded_action["action"] == "create_calendar_event":
                                     asyncio.create_task(_execute_create_calendar_event(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "spotify_status":
+                                    asyncio.create_task(_execute_spotify_status(ws, history=history))
+                                elif embedded_action["action"] == "spotify_play":
+                                    asyncio.create_task(_execute_spotify_play(ws, history=history))
+                                elif embedded_action["action"] == "spotify_pause":
+                                    asyncio.create_task(_execute_spotify_pause(ws, history=history))
+                                elif embedded_action["action"] == "spotify_skip":
+                                    asyncio.create_task(_execute_spotify_skip(ws, history=history))
+                                elif embedded_action["action"] == "spotify_previous":
+                                    asyncio.create_task(_execute_spotify_previous(ws, history=history))
+                                elif embedded_action["action"] == "spotify_volume":
+                                    asyncio.create_task(_execute_spotify_volume(embedded_action.get("target", "up"), ws, history=history))
+                                elif embedded_action["action"] == "spotify_play_query":
+                                    asyncio.create_task(_execute_spotify_play_query(embedded_action.get("target", ""), ws, history=history))
+                                elif embedded_action["action"] == "spotify_queue":
+                                    asyncio.create_task(_execute_spotify_queue(embedded_action.get("target", ""), ws, history=history))
 
                 # Update history
                 history.append({"role": "user", "content": user_text})
