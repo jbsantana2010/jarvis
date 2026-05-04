@@ -46,7 +46,20 @@ def is_configured() -> bool:
 # Brave Search API
 # ---------------------------------------------------------------------------
 
-async def _brave_search(query: str, count: int = 5) -> list[dict]:
+_FRESH_KEYWORDS = (
+    "price", "cost", "score", "result", "latest", "news", "today",
+    "current", "live", "now", "standings", "weather", "winner", "won",
+    "happening", "update", "right now", "this week", "this month",
+)
+
+
+def _needs_freshness(query: str) -> bool:
+    """Return True if the query is time-sensitive and should prefer recent results."""
+    q = query.lower()
+    return any(kw in q for kw in _FRESH_KEYWORDS)
+
+
+async def _brave_search(query: str, count: int = 7) -> list[dict]:
     """
     Call Brave Search API and return a flat list of result dicts.
     Each dict: {"title": str, "url": str, "description": str}
@@ -56,15 +69,19 @@ async def _brave_search(query: str, count: int = 5) -> list[dict]:
     if not api_key:
         raise RuntimeError("BRAVE_SEARCH_API_KEY not set")
 
+    params: dict = {
+        "q": query,
+        "count": count,
+        "text_decorations": "false",
+        "search_lang": "en",
+    }
+    if _needs_freshness(query):
+        params["freshness"] = "pw"   # past week — recent data for prices/scores/news
+
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(
             _BRAVE_ENDPOINT,
-            params={
-                "q": query,
-                "count": count,
-                "text_decorations": "false",
-                "search_lang": "en",
-            },
+            params=params,
             headers={
                 "Accept": "application/json",
                 "Accept-Encoding": "gzip",
@@ -163,6 +180,8 @@ async def search_and_summarize(query: str, anthropic_client=None) -> str:
                 system=(
                     "You are JARVIS. Answer the user's question using only the search results provided. "
                     "Be direct and factual. 2-4 sentences maximum. "
+                    "For prices, scores, or live data: always state the value AND note if the result may be delayed "
+                    "(e.g. 'as of earlier today' or 'last reported at X'). Never present stale data as live. "
                     "If results don't clearly answer the question, say so honestly — do not guess. "
                     "Address the user as 'sir'. No markdown, no bullet points, no source citations."
                 ),

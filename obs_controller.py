@@ -39,20 +39,37 @@ for _lg in (
 def _get_windows_host_ip() -> str:
     """Return the Windows host IP when running inside WSL2.
 
-    Under WSL2 the Windows host is reachable at the nameserver address
-    listed in /etc/resolv.conf (typically 10.255.255.254).
-    Falls back to 'localhost' on any error.
+    Uses the default route gateway (e.g. 172.27.32.1), which is the actual
+    Windows host in NAT-mode WSL2. Falls back to the /etc/resolv.conf
+    nameserver, then 'localhost', on any error.
     """
+    import subprocess as _sp2
+
+    # Primary: default route gateway — the real Windows host in NAT-mode WSL2
     try:
-        import subprocess as _sp2
+        r = _sp2.run(
+            ["bash", "-c", "ip route | awk '/^default/ {print $3; exit}'"],
+            capture_output=True, text=True, timeout=3,
+        )
+        ip = r.stdout.strip()
+        if ip:
+            return ip
+    except Exception:
+        pass
+
+    # Fallback: DNS nameserver from /etc/resolv.conf
+    try:
         r = _sp2.run(
             ["bash", "-c", "grep nameserver /etc/resolv.conf | awk '{print $2}' | head -1"],
             capture_output=True, text=True, timeout=3,
         )
         ip = r.stdout.strip()
-        return ip if ip else "localhost"
+        if ip:
+            return ip
     except Exception:
-        return "localhost"
+        pass
+
+    return "localhost"
 
 
 import platform as _plat
