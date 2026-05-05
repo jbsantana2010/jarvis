@@ -621,3 +621,54 @@ File parsed: Juan_Financial_Dashboard.xlsx
   bundle hashes never appear in index.html and the browser keeps the old
   cached bundle (visible in logs as `304 Not Modified` on the same hashed
   filenames across sessions).
+
+**Web Speech API wedges silently after audio output (continuous mode)**:
+  Chrome's recognition session can stop emitting results after JARVIS
+  speaks or after a long idle period without firing onerror, leaving the
+  UI listening in name only. Fixed in voice.ts with a heartbeat: every 4s
+  we check Date.now() - lastActivityTs, and if >12s have passed while
+  shouldListen && !paused we call recognition.abort() then start() after
+  a 200ms settle. Verified on the work PC May 5: before the fix, ~1
+  transcript per 3 minutes; after the fix, transcripts arrived reliably.
+  Console-side ([voice] onstart / onend / no-speech / forceRestart) is
+  the source of truth — pair with the server's `WS rx transcript:` line
+  to see whether a problem is browser-side or server-side.
+
+**Mic accuracy is per-machine, not a code issue**:
+  Web Speech API quality varies wildly with hardware. The work PC may
+  capture but mistranscribe ("can you hear me" → "that's all my charges
+  but I didn't even have to keep") while the home setup transcribes
+  cleanly. This is the browser's STT, not JARVIS. Per-machine checks:
+    - Windows → Settings → System → Sound → Input → confirm right device
+      is default and meter spikes when speaking
+    - Levels: 80–100 with mic boost +20dB for laptop mics
+    - Background noise (fans, HVAC, music) wrecks Web Speech API recall
+    - Headset mic > built-in array mic in almost every case
+  Future option (real Sprint, not a 5-line fix): replace browser STT
+  with a server-side ASR (faster-whisper or whisper.cpp running locally
+  in WSL). Removes Chrome dependency, gives consistent accuracy across
+  machines, costs CPU and a bigger architectural change.
+
+---
+
+## Session handoff — May 5, 2026
+
+Latest commits on origin/main:
+  8bf23e3  voice recognition resilience — heartbeat restart + diagnostics
+  455ddeb  voice WS bytes serialization + OBS connect backoff + diagnostics
+
+To pick up at the home machine:
+  git pull
+  cd frontend && npm run build
+  cd .. && python3 server.py
+
+What's known to work:
+  - Voice WS no longer crashes mid-turn on TTS reply
+  - OBS-less machines no longer spam "OBS not reachable"
+  - Recognition recovers from Web Speech API wedges via 12s heartbeat
+  - All three fixes verified on the work PC
+
+Open: work-PC mic mistranscribes (hardware/OS-level, see entry above).
+The home machine reportedly works well, so no code change required
+unless cross-machine accuracy becomes a recurring frustration — at
+which point: server-side Whisper ASR is the next move.
