@@ -6,7 +6,7 @@
     <title>JARVIS</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
-  <body>
+  <body class="mode-dashboard">
     <!-- Activation gate (unchanged) -->
     <div id="activation-overlay">
       <div id="activation-content">
@@ -15,8 +15,34 @@
       </div>
     </div>
 
-    <!-- Orb canvas: full-screen fixed, z-index 1 — untouched -->
+    <!-- Orb canvas: full-screen fixed, z-index 1 -->
     <canvas id="orb-canvas"></canvas>
+
+    <!-- CSS fallback orb — shown only if WebGL unavailable (display toggled by orb.ts) -->
+    <div id="orb-fallback"></div>
+
+    <!-- ===== SPRINT 16: Ambient indicator ===== -->
+    <!-- Visible only in mode-ambient. Click → mode-dashboard -->
+    <div id="ambient-indicator">
+      <div id="ambient-dot" class="ambient-dot ambient-dot-idle"></div>
+      <div id="ambient-logo">JARVIS</div>
+      <div id="ambient-state">ready</div>
+      <div id="ambient-hint">· click to open</div>
+    </div>
+
+    <!-- ===== SPRINT 16: Context overlay ===== -->
+    <!-- Visible only in mode-context. Floats center-screen over everything -->
+    <div id="context-overlay">
+      <div id="context-panel-header">
+        <div id="context-panel-title">INFO</div>
+        <button id="context-dismiss-btn" title="Dismiss">✕</button>
+      </div>
+      <div id="context-panel-body"></div>
+      <div id="context-dismiss-bar">
+        <div id="context-dismiss-progress"></div>
+      </div>
+    </div>
+
 
     <!-- Dashboard overlay: z-index 5 -->
     <div id="dashboard">

@@ -10,6 +10,7 @@ import { createVoiceInput, createAudioPlayer } from "./voice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { initDashboard, dashboardVoiceState, dashboardResponse } from "./dashboard";
+import { detectPanelTrigger, setMode, updateAmbientState, dismissPanel } from "./contextMode";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ function transition(newState: State) {
   currentState = newState;
   orb.setState(newState as OrbState);
   dashboardVoiceState(newState as "idle"|"listening"|"thinking"|"speaking");
+  updateAmbientState(newState);
   updateStatus(newState);
 
   switch (newState) {
@@ -105,6 +107,8 @@ const voiceInput = createVoiceInput(
   (text: string) => {
     // Cancel any current JARVIS response before sending new input
     audioPlayer.stop();
+    // Check if transcript triggers a context panel or mode switch
+    detectPanelTrigger(text);
     // User spoke — send transcript
     socket.send({ type: "transcript", text, isFinal: true });
     transition("thinking");
@@ -248,9 +252,27 @@ async function activate() {
   // 3. Now it's safe to start the mic
   voiceInput.start();
   transition("listening");
+
+  // 4. Start in ambient mode — dashboard is shown only on demand
+  setMode("ambient");
 }
 
+
 overlay.addEventListener("click", activate, { once: true });
+
+// ---------------------------------------------------------------------------
+// Sprint 16: Ambient indicator & context panel dismiss
+// ---------------------------------------------------------------------------
+
+const ambientIndicator = document.getElementById("ambient-indicator");
+if (ambientIndicator) {
+  ambientIndicator.addEventListener("click", () => setMode("dashboard"));
+}
+
+const ctxDismissBtn = document.getElementById("context-dismiss-btn");
+if (ctxDismissBtn) {
+  ctxDismissBtn.addEventListener("click", () => dismissPanel());
+}
 
 // ---------------------------------------------------------------------------
 // UI Controls

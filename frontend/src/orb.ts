@@ -17,13 +17,23 @@ export interface Orb {
 }
 
 export function createOrb(canvas: HTMLCanvasElement): Orb {
+  try {
+    return _createWebGLOrb(canvas);
+  } catch (err) {
+    console.warn("[orb] WebGL init failed — using CSS fallback:", err);
+    canvas.style.display = "none";
+    return _createCSSFallbackOrb();
+  }
+}
+
+function _createWebGLOrb(canvas: HTMLCanvasElement): Orb {
   let destroyed = false;
   const N = 2000;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setClearColor(0x050508, 1);
+  renderer.setClearColor(0x000000, 0); // transparent — page background shows through
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
@@ -302,9 +312,14 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
     mat.opacity = currentBright + bass * 0.08;
     mat.size = currentSize + bass * 0.05;
 
-    if (state === "thinking") { mat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); lineMat.color.lerp(new THREE.Color(0x6ec4ff), 0.015); }
-    else if (state === "speaking") { mat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); lineMat.color.lerp(new THREE.Color(0x5ab8f0), 0.015); }
-    else { mat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); lineMat.color.lerp(new THREE.Color(0x4ca8e8), 0.015); }
+    // State-reactive colors matching the design system
+    const stateColor =
+      state === "thinking"  ? new THREE.Color(0xa855f7) :  // purple
+      state === "speaking"  ? new THREE.Color(0x22c55e) :  // green
+      state === "listening" ? new THREE.Color(0x4db8ff) :  // bright blue
+                              new THREE.Color(0x3a6a9a);   // dim blue (idle)
+    mat.color.lerp(stateColor, 0.025);
+    lineMat.color.lerp(stateColor, 0.025);
 
     camera.position.x = Math.sin(t * 0.02) * 5;
     camera.position.y = Math.cos(t * 0.03) * 3;
@@ -323,7 +338,10 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
   animate();
 
   return {
-    setState(s: OrbState) { state = s; },
+    setState(s: OrbState) {
+      state = s;
+      _setOrbBodyClass(s);
+    },
     setAnalyser(a: AnalyserNode | null) {
       analyser = a;
       if (a) freqData = new Uint8Array(a.frequencyBinCount);
@@ -332,6 +350,32 @@ export function createOrb(canvas: HTMLCanvasElement): Orb {
       destroyed = true;
       window.removeEventListener("resize", onResize);
       renderer.dispose();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper — keeps a body class in sync with orb state for CSS hooks
+// ---------------------------------------------------------------------------
+function _setOrbBodyClass(s: OrbState) {
+  document.body.classList.remove("orb-idle", "orb-listening", "orb-thinking", "orb-speaking");
+  document.body.classList.add(`orb-${s}`);
+}
+
+// ---------------------------------------------------------------------------
+// CSS fallback orb — used when WebGL is unavailable
+// ---------------------------------------------------------------------------
+function _createCSSFallbackOrb(): Orb {
+  const el = document.getElementById("orb-fallback");
+  if (el) el.style.display = "block";
+  _setOrbBodyClass("idle");
+
+  return {
+    setState(s: OrbState) { _setOrbBodyClass(s); },
+    setAnalyser(_a: AnalyserNode | null) { /* no-op */ },
+    destroy() {
+      const el = document.getElementById("orb-fallback");
+      if (el) el.style.display = "none";
     },
   };
 }

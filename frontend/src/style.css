@@ -640,3 +640,246 @@ html, body {
 .project-name { font-size: 12px; color: #EAF2FF; font-weight: 500; flex: 1; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project-meta { font-size: 10px; color: #5D6B86; }
+
+
+/* ============================================================
+   SPRINT 16: Contextual UI System
+   ============================================================ */
+
+/* --- Mode switching via body class --- */
+
+/* DASHBOARD mode (default) — show dashboard, hide ambient + context */
+body.mode-dashboard #dashboard       { display: flex; opacity: 1; pointer-events: auto; }
+body.mode-dashboard #ambient-indicator { display: none !important; }
+body.mode-dashboard #context-overlay  { display: none !important; }
+
+/* AMBIENT mode — hide dashboard, show ambient indicator */
+body.mode-ambient #dashboard          { display: none !important; }
+body.mode-ambient #ambient-indicator  { display: flex; }
+body.mode-ambient #context-overlay    { display: none !important; }
+
+/* CONTEXT mode — dim dashboard, show context panel */
+body.mode-context #dashboard          { opacity: 0.25; pointer-events: none; }
+body.mode-context #ambient-indicator  { display: none !important; }
+body.mode-context #context-overlay    { display: flex; }
+
+/* --- Ambient Indicator --- */
+#ambient-indicator {
+  display: none;
+  position: fixed;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  align-items: center;
+  gap: 10px;
+  background: rgba(9, 13, 22, 0.88);
+  border: 1px solid #1D2A3D;
+  border-radius: 30px;
+  padding: 10px 22px 10px 18px;
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+  transition: border-color 0.2s, background 0.2s, transform 0.15s;
+  user-select: none;
+}
+#ambient-indicator:hover {
+  border-color: rgba(77, 184, 255, 0.45);
+  background: rgba(9, 13, 22, 0.96);
+  transform: translateX(-50%) translateY(-2px);
+}
+#ambient-indicator:active { transform: translateX(-50%) translateY(0); }
+
+.ambient-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #5D6B86;
+  transition: background 0.3s;
+}
+.ambient-dot-listening { background: #4DB8FF; animation: pulse-ambient 1.5s ease-in-out infinite; }
+.ambient-dot-thinking  { background: #F7B731; animation: pulse-ambient 0.7s ease-in-out infinite; }
+.ambient-dot-speaking  { background: #22C55E; animation: pulse-ambient 1.1s ease-in-out infinite; }
+.ambient-dot-idle      { background: #5D6B86; animation: none; }
+
+@keyframes pulse-ambient {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(1.4); }
+}
+
+#ambient-logo  { font-size: 11px; letter-spacing: 3px; color: #9AA9C3; font-weight: 600; }
+#ambient-state { font-size: 10px; color: #5D6B86; min-width: 42px; }
+#ambient-hint  { font-size: 9px; color: #3D4D62; margin-left: 2px; }
+
+/* --- Context Overlay --- */
+#context-overlay {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  width: 430px;
+  max-width: 92vw;
+  flex-direction: column;
+  background: rgba(9, 13, 22, 0.97);
+  border: 1px solid #1D2A3D;
+  border-radius: 16px;
+  overflow: hidden;
+  backdrop-filter: blur(24px);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(77, 184, 255, 0.06);
+  animation: ctx-appear 0.18s ease-out;
+}
+@keyframes ctx-appear {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+#context-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid #1A2436;
+}
+#context-panel-title {
+  font-size: 9px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #4DB8FF;
+  font-weight: 600;
+}
+#context-dismiss-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #3D4D62;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+#context-dismiss-btn:hover { color: #9AA9C3; background: rgba(93, 107, 134, 0.1); }
+
+#context-panel-body {
+  padding: 18px 20px 20px;
+  min-height: 90px;
+}
+
+/* Countdown progress bar at bottom of context panel */
+#context-dismiss-bar { height: 2px; background: #0D1320; }
+#context-dismiss-progress {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #1D2A3D 0%, #4DB8FF 100%);
+}
+
+/* Loading state */
+.ctx-loading {
+  font-size: 12px;
+  color: #5D6B86;
+  font-style: italic;
+  padding: 10px 0;
+}
+
+/* Context panel content — stat rows */
+.ctx-stat-row { display: flex; gap: 22px; margin-bottom: 14px; flex-wrap: wrap; }
+.ctx-stat     { display: flex; flex-direction: column; gap: 4px; }
+.ctx-stat-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: #5D6B86; }
+.ctx-stat-val   { font-size: 16px; color: #EAF2FF; font-weight: 400; font-family: 'JetBrains Mono', 'Consolas', monospace; }
+
+/* Context panel content — Spotify */
+.ctx-track  { font-size: 15px; color: #EAF2FF; font-weight: 500; margin-bottom: 3px;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctx-artist { font-size: 12px; color: #5D6B86; margin-bottom: 12px;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Context panel content — Projects */
+.ctx-project-row {
+  padding: 7px 0;
+  border-bottom: 1px solid #0D1320;
+  font-size: 12px;
+  color: #EAF2FF;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ctx-project-row:last-child { border-bottom: none; }
+.ctx-project-row.ctx-blocked { border-left: 2px solid rgba(255,59,79,0.4); padding-left: 8px; }
+
+/* Context panel content — Budget */
+.ctx-budget-total { font-size: 28px; color: #EAF2FF; font-weight: 300; margin-bottom: 4px;
+                    font-family: 'JetBrains Mono', 'Consolas', monospace; }
+.ctx-budget-label { font-size: 9px; letter-spacing: 2px; color: #5D6B86; text-transform: uppercase; }
+.ctx-budget-sub   { font-size: 11px; color: #4A5A74; margin-top: 8px; }
+
+
+/* ============================================================
+   SPRINT 17: Orb fix — CSS fallback + body state glow classes
+   ============================================================ */
+
+/* CSS fallback orb — shown only when WebGL is unavailable */
+#orb-fallback {
+  display: none;
+  position: fixed;
+  width: 340px; height: 340px;
+  top: 50%; left: 210px;          /* centred in the 420px brain panel */
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center,
+    rgba(58, 106, 154, 0.45) 0%,
+    rgba(58, 106, 154, 0.12) 45%,
+    transparent 70%);
+  animation: orb-fallback-pulse 4s ease-in-out infinite;
+  transition: background 0.8s ease;
+}
+
+body.orb-listening #orb-fallback {
+  background: radial-gradient(ellipse at center,
+    rgba(77, 184, 255, 0.55) 0%,
+    rgba(77, 184, 255, 0.15) 45%,
+    transparent 70%);
+  animation: orb-fallback-pulse 2s ease-in-out infinite;
+}
+body.orb-thinking #orb-fallback {
+  background: radial-gradient(ellipse at center,
+    rgba(168, 85, 247, 0.55) 0%,
+    rgba(168, 85, 247, 0.15) 45%,
+    transparent 70%);
+  animation: orb-fallback-pulse 1s ease-in-out infinite;
+}
+body.orb-speaking #orb-fallback {
+  background: radial-gradient(ellipse at center,
+    rgba(34, 197, 94, 0.55) 0%,
+    rgba(34, 197, 94, 0.15) 45%,
+    transparent 70%);
+  animation: orb-fallback-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes orb-fallback-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1);   opacity: 0.9; }
+  50%       { transform: translate(-50%, -50%) scale(1.1); opacity: 0.6; }
+}
+
+/* Subtle body-level glow tint when WebGL orb changes state */
+/* (Keeps the ambient mode feeling alive even if particles are faint) */
+body.orb-listening::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 420px 420px at 210px 50%,
+    rgba(77, 184, 255, 0.04) 0%, transparent 70%);
+}
+body.orb-thinking::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 420px 420px at 210px 50%,
+    rgba(168, 85, 247, 0.05) 0%, transparent 70%);
+}
+body.orb-speaking::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 420px 420px at 210px 50%,
+    rgba(34, 197, 94, 0.04) 0%, transparent 70%);
+}
