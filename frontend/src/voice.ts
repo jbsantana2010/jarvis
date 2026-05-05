@@ -34,8 +34,57 @@ export function createVoiceInput(
 
   let shouldListen = false;
   let paused = false;
+  // Activity tracker: any onstart/onresult/onend/onerror updates this.
+  // The heartbeat below uses it to detect a wedged recognition session
+  // (Chrome's Web Speech API can go silent after audio output or long
+  // idle periods without firing the obvious error handlers).
+  let lastActivityTs = Date.now();
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  const HEARTBEAT_INTERVAL_MS = 4000;
+  const STALE_AFTER_MS = 12000;
+
+  function safeStart(): void {
+    try {
+      recognition.start();
+    } catch {
+      // Already started — fine
+    }
+  }
+
+  function forceRestart(reason: string): void {
+    console.log("[voice] forceRestart:", reason);
+    try { recognition.abort(); } catch { /* ignore */ }
+    setTimeout(() => {
+      if (shouldListen && !paused) safeStart();
+    }, 200);
+  }
+
+  function ensureHeartbeat(): void {
+    if (heartbeat !== null) return;
+    heartbeat = setInterval(() => {
+      if (!shouldListen || paused) return;
+      const idle = Date.now() - lastActivityTs;
+      if (idle > STALE_AFTER_MS) {
+        forceRestart(`stale ${idle}ms`);
+        lastActivityTs = Date.now();  // avoid immediate re-fire
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  function clearHeartbeat(): void {
+    if (heartbeat !== null) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  }
+
+  recognition.onstart = () => {
+    lastActivityTs = Date.now();
+    console.log("[voice] onstart");
+  };
 
   recognition.onresult = (event: any) => {
+    lastActivityTs = Date.now();
     for (let i = event.resultIndex; i < event.results.length; i++) {
       if (event.results[i].isFinal) {
         const text = event.results[i][0].transcript.trim();
@@ -45,23 +94,29 @@ export function createVoiceInput(
   };
 
   recognition.onend = () => {
+    lastActivityTs = Date.now();
+    console.log(`[voice] onend (shouldListen=${shouldListen}, paused=${paused})`);
     if (shouldListen && !paused) {
-      try {
-        recognition.start();
-      } catch {
-        // Already started
-      }
+      safeStart();
     }
   };
 
   recognition.onerror = (event: any) => {
+    lastActivityTs = Date.now();
     if (event.error === "not-allowed") {
       onError("Microphone access denied. Please allow microphone access.");
       shouldListen = false;
+      clearHeartbeat();
     } else if (event.error === "no-speech") {
-      // Normal, just restart
+      // Normal idle — onend will restart
+      console.log("[voice] no-speech");
     } else if (event.error === "aborted") {
-      // Expected during pause
+      // Expected during pause / forceRestart
+    } else if (event.error === "audio-capture") {
+      onError("No microphone detected. Check your input device.");
+      console.warn("[voice] audio-capture error");
+    } else if (event.error === "network") {
+      console.warn("[voice] network error — Web Speech API needs internet");
     } else {
       console.warn("[voice] recognition error:", event.error);
     }
@@ -71,29 +126,26 @@ export function createVoiceInput(
     start() {
       shouldListen = true;
       paused = false;
-      try {
-        recognition.start();
-      } catch {
-        // Already started
-      }
+      lastActivityTs = Date.now();
+      safeStart();
+      ensureHeartbeat();
     },
     stop() {
       shouldListen = false;
       paused = false;
-      recognition.stop();
+      clearHeartbeat();
+      try { recognition.stop(); } catch { /* ignore */ }
     },
     pause() {
       paused = true;
-      recognition.stop();
+      try { recognition.stop(); } catch { /* ignore */ }
     },
     resume() {
       paused = false;
+      lastActivityTs = Date.now();
       if (shouldListen) {
-        try {
-          recognition.start();
-        } catch {
-          // Already started
-        }
+        safeStart();
+        ensureHeartbeat();
       }
     },
   };
