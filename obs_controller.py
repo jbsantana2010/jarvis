@@ -13,6 +13,7 @@ All public functions are async and safe to call from the voice loop.
 """
 
 import os
+import time
 import asyncio
 import logging
 from typing import Any
@@ -94,6 +95,9 @@ CONNECT_TIMEOUT = 3  # seconds -- keeps commands snappy even when OBS is closed
 
 _client: Any = None          # obsws_python.ReqClient once connected
 _lock: asyncio.Lock | None = None  # created lazily inside the event loop
+_last_fail_ts: float = 0.0   # timestamp of last failed connect; gates retries
+_FAIL_BACKOFF_S: float = 60.0  # don't re-attempt connect more than once per minute when down
+_logged_unreachable: bool = False  # log "not reachable" once per backoff cycle
 
 
 def _get_lock() -> asyncio.Lock:
@@ -108,12 +112,18 @@ async def _get_client() -> Any | None:
 
     On first call: attempts connection.
     On success: caches the client for reuse.
-    On failure: returns None -- callers report 'OBS not running'.
+    On failure: returns None and applies a 60s backoff so machines without OBS
+    don't re-attempt every dashboard poll. The backoff log line is emitted at
+    most once per cycle to keep the JARVIS log readable on OBS-less machines.
     """
-    global _client
+    global _client, _last_fail_ts, _logged_unreachable
     async with _get_lock():
         if _client is not None:
             return _client
+        # Backoff: skip connect if we recently failed
+        now = time.time()
+        if _last_fail_ts and (now - _last_fail_ts) < _FAIL_BACKOFF_S:
+            return None
         try:
             import obsws_python as obs
             # ReqClient.__init__ is blocking -- run in thread to not block event loop
@@ -125,10 +135,15 @@ async def _get_client() -> Any | None:
                 timeout=CONNECT_TIMEOUT,
             )
             _client = client
+            _last_fail_ts = 0.0
+            _logged_unreachable = False
             log.info(f"OBS connected at {OBS_HOST}:{OBS_PORT}")
             return _client
         except Exception as exc:
-            log.info(f"OBS not reachable: {exc}")
+            _last_fail_ts = now
+            if not _logged_unreachable:
+                log.info(f"OBS not reachable: {exc} (suppressing further notices for {int(_FAIL_BACKOFF_S)}s)")
+                _logged_unreachable = True
             return None
 
 

@@ -3172,7 +3172,7 @@ async def _lookup_and_report(lookup_type: str, lookup_fn, ws, history: list[dict
             audio = await synthesize_speech(fallback)
             await ws.send_json({"type": "status", "state": "speaking"})
             if audio:
-                await ws.send_json({"type": "audio", "data": audio, "text": fallback})
+                await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": fallback})
             await ws.send_json({"type": "status", "state": "idle"})
         except Exception:
             pass
@@ -3500,6 +3500,13 @@ async def voice_handler(ws: WebSocket):
             except json.JSONDecodeError:
                 continue
 
+            # Diagnostic: log incoming transcript messages (helps debug
+            # cases where the UI never sends finals — e.g. mic permission
+            # or speech-recognition device issues on a fresh machine).
+            if msg.get("type") == "transcript":
+                _t = (msg.get("text") or "")[:80]
+                log.info(f"WS rx transcript: text={_t!r} isFinal={msg.get('isFinal')}")
+
             # ── Fix-self: activate work mode in JARVIS repo ──
             if msg.get("type") == "fix_self":
                 jarvis_dir = str(Path(__file__).parent)
@@ -3509,7 +3516,7 @@ async def voice_handler(ws: WebSocket):
                 await ws.send_json({"type": "status", "state": "speaking"})
                 audio = await synthesize_speech(tts)
                 if audio:
-                    await ws.send_json({"type": "audio", "data": audio, "text": response_text})
+                    await ws.send_json({"type": "audio", "data": base64.b64encode(audio).decode(), "text": response_text})
                 else:
                     await ws.send_json({"type": "text", "text": response_text})
                 continue

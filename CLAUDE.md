@@ -585,3 +585,39 @@ File parsed: Juan_Financial_Dashboard.xlsx
 
 **Vite proxy SSL error (EPROTO)**: Proxy target must be http:// not https://
   when backend runs with DEV_MODE=1. Already fixed in vite.config.ts.
+
+**WS audio dropped — "Object of type bytes is not JSON serializable"**:
+  Two send sites (line 3175 lookup-timeout fallback, line 3512 fix_self branch)
+  forgot to base64-encode Fish Audio bytes before send_json, while the other 25
+  audio sends already did. Symptom: WebSocket crashes mid-turn, UI freezes after
+  the first canned greeting. Fixed by wrapping audio in
+  base64.b64encode(audio).decode() to match the existing pattern.
+
+**OBS log spam on machines without OBS configured**:
+  obs_controller._get_client() retried the connection on every dashboard poll
+  (~once per 8s) when OBS wasn't running. Added a 60s backoff after a failed
+  connect plus a "log once per cycle" gate (see _last_fail_ts and
+  _logged_unreachable). Voice command path is unchanged when OBS is up; on
+  OBS-less machines the log stays clean and reconnects are throttled. The cache
+  resets on a successful connect so OBS coming online mid-session is picked up.
+
+**Diagnosing missing voice transcripts on a fresh machine**:
+  Speech recognition is browser-side (Web Speech API in voice.ts). If the
+  server log shows zero `User:` lines despite the user speaking, the browser
+  never sent the transcript. server.py voice_handler now emits one info-level
+  line for every incoming transcript message:
+  `WS rx transcript: text=… isFinal=…`. Use it to distinguish:
+    (a) no `WS rx transcript:` lines → browser not sending → check mic
+        permission / OS default input / DevTools console for "not-allowed";
+    (b) `isFinal=False` only → speech engine not finalizing utterances;
+    (c) `isFinal=True` lines but no follow-up `User:` → server-side filter
+        is dropping the message (apply_speech_corrections, etc.).
+
+**Frontend dist out of date when switching machines**:
+  FastAPI serves frontend/dist/ via StaticFiles (server.py:4736). After a
+  fresh git pull on a new PC, running `python3 server.py` will serve the
+  *committed* dist (or no dist at all). Always run `cd frontend && npm run
+  build` after pulling UI changes from another machine, otherwise the new
+  bundle hashes never appear in index.html and the browser keeps the old
+  cached bundle (visible in logs as `304 Not Modified` on the same hashed
+  filenames across sessions).
