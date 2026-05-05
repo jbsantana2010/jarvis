@@ -4704,6 +4704,29 @@ async def dashboard_action(request: Request):
         log.warning("dashboard_action error: %s", e)
         return {'ok': False, 'error': str(e)}
 
+@app.get('/api/dashboard/calendar')
+async def dashboard_calendar():
+    """Return today's calendar events for the dashboard widget."""
+    try:
+        from calendar_google import fetch_events, is_configured
+        if not is_configured():
+            return {'events': [], 'error': 'Calendar not configured'}
+        events = await fetch_events('today')
+        result = []
+        for ev in events:
+            result.append({
+                'title':      ev.title,
+                'start':      ev.start.strftime('%H:%M') if not ev.all_day else None,
+                'end':        ev.end.strftime('%H:%M')   if not ev.all_day else None,
+                'start_iso':  ev.start.isoformat(),
+                'location':   ev.location or '',
+                'all_day':    ev.all_day,
+            })
+        return {'events': result}
+    except Exception as e:
+        log.warning("dashboard_calendar error: %s", e)
+        return {'events': [], 'error': str(e)}
+
 # Static file serving (frontend)
 # ---------------------------------------------------------------------------
 

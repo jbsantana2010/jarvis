@@ -43,6 +43,8 @@ export function setMode(mode: UIMode): void {
     _clearDismissTimer();
     activePanel = null;
   }
+  // Let CSS apply new canvas width, then tell the orb renderer to resize
+  requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
 }
 
 export function getMode(): UIMode { return currentMode; }

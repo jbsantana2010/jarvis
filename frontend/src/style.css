@@ -883,3 +883,30 @@ body.orb-speaking::before {
   background: radial-gradient(ellipse 420px 420px at 210px 50%,
     rgba(34, 197, 94, 0.04) 0%, transparent 70%);
 }
+
+
+/* ============================================================
+   SPRINT 17b: Orb canvas — constrain to brain panel in dashboard/context mode
+   so the particle center is visible through the transparent brain panel
+   ============================================================ */
+body.mode-dashboard #orb-canvas,
+body.mode-context   #orb-canvas {
+  width: 420px !important;
+  min-width: 0;
+}
+/* Ambient mode — canvas must be full-screen so orb fills the whole display */
+body.mode-ambient #orb-canvas {
+  width: 100% !important;
+}
+
+/* Calendar widget */
+.cal-date     { font-size: 10px; color: #4DB8FF; letter-spacing: 0.5px; }
+.cal-list     { display: flex; flex-direction: column; gap: 2px; }
+.cal-row      { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid #1A2436; align-items: flex-start; }
+.cal-row:last-child { border-bottom: none; }
+.cal-time     { font-size: 10px; color: #5D6B86; min-width: 58px; font-family: 'JetBrains Mono','Consolas',monospace; padding-top: 1px; }
+.cal-body     { flex: 1; min-width: 0; }
+.cal-title    { font-size: 12px; color: #EAF2FF; font-weight: 500; display: flex; align-items: center; gap: 6px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-location { font-size: 10px; color: #5D6B86; margin-top: 2px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

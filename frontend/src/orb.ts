@@ -32,7 +32,7 @@ function _createWebGLOrb(canvas: HTMLCanvasElement): Orb {
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(canvas.clientWidth || window.innerWidth, canvas.clientHeight || window.innerHeight);
   renderer.setClearColor(0x000000, 0); // transparent — page background shows through
 
   const scene = new THREE.Scene();
@@ -329,9 +329,11 @@ function _createWebGLOrb(canvas: HTMLCanvasElement): Orb {
   }
 
   function onResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
+    const w = canvas.clientWidth || window.innerWidth;
+    const h = canvas.clientHeight || window.innerHeight;
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(w, h);
   }
 
   window.addEventListener("resize", onResize);
