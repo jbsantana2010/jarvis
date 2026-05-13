@@ -7,10 +7,12 @@
 
 import { createOrb, type OrbState } from "./orb";
 import { createVoiceInput, createAudioPlayer } from "./voice";
+import { createWhisperVoiceInput } from "./whisperVoice";
 import { createSocket } from "./ws";
 import { openSettings, checkFirstTimeSetup } from "./settings";
 import { initDashboard, dashboardVoiceState, dashboardResponse } from "./dashboard";
 import { detectPanelTrigger, setMode, updateAmbientState, dismissPanel } from "./contextMode";
+import type { VoiceInput } from "./voice";
 import "./style.css";
 
 // ---------------------------------------------------------------------------
@@ -79,16 +81,16 @@ function transition(newState: State) {
 
   switch (newState) {
     case "idle":
-      if (!isMuted) voiceInput.resume();
+      if (!isMuted) voiceInput?.resume();
       break;
     case "listening":
-      if (!isMuted) voiceInput.resume();
+      if (!isMuted) voiceInput?.resume();
       break;
     case "thinking":
-      voiceInput.pause();
+      voiceInput?.pause();
       break;
     case "speaking":
-      voiceInput.pause();
+      voiceInput?.pause();
       // Start watchdog: force idle if audio never finishes (decode fail, lost WS msg, etc.)
       speakingWatchdog = setTimeout(() => {
         console.warn("[state] speaking watchdog fired — forcing idle");
@@ -100,23 +102,53 @@ function transition(newState: State) {
 }
 
 // ---------------------------------------------------------------------------
-// Voice input
+// Voice input — resolved at activation time (Whisper or browser STT)
 // ---------------------------------------------------------------------------
 
-const voiceInput = createVoiceInput(
-  (text: string) => {
-    // Cancel any current JARVIS response before sending new input
-    audioPlayer.stop();
-    // Check if transcript triggers a context panel or mode switch
-    detectPanelTrigger(text);
-    // User spoke — send transcript
-    socket.send({ type: "transcript", text, isFinal: true });
-    transition("thinking");
-  },
-  (msg: string) => {
-    showError(msg);
+let voiceInput: VoiceInput | null = null;
+
+async function buildVoiceInput(): Promise<VoiceInput> {
+  // Check if server-side Whisper ASR is available
+  try {
+    const res = await fetch("/api/stt/status");
+    if (res.ok) {
+      const data = await res.json() as { available: boolean; model?: string };
+      if (data.available) {
+        console.log("[stt] Whisper ASR available — model:", data.model ?? "unknown");
+        const whisper = await createWhisperVoiceInput(
+          (text: string) => {
+            audioPlayer.stop();
+            detectPanelTrigger(text);
+            socket.send({ type: "transcript", text, isFinal: true });
+            transition("thinking");
+          },
+          (msg: string) => showError(msg)
+        );
+        // Show Whisper badge in status
+        const sttBadge = document.getElementById("stt-badge");
+        if (sttBadge) {
+          sttBadge.textContent = "whisper";
+          sttBadge.style.display = "inline";
+        }
+        return whisper;
+      }
+    }
+  } catch (err) {
+    console.warn("[stt] status check failed — falling back to browser STT:", err);
   }
-);
+
+  // Fall back to browser Web Speech API
+  console.log("[stt] using browser Web Speech API");
+  return createVoiceInput(
+    (text: string) => {
+      audioPlayer.stop();
+      detectPanelTrigger(text);
+      socket.send({ type: "transcript", text, isFinal: true });
+      transition("thinking");
+    },
+    (msg: string) => showError(msg)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Audio playback finished
@@ -197,7 +229,7 @@ socket.onMessage((msg) => {
     // Server sends {type:"text"} when Fish Audio fails — speak via browser TTS fallback
     const text = msg.text as string;
     console.log("[JARVIS text-fallback]", text);
-  if (text) dashboardResponse(text);
+    if (text) dashboardResponse(text);
     if (text) {
       speakWithBrowserTts(text);
     } else {
@@ -249,11 +281,14 @@ async function activate() {
   overlay.classList.add("hidden");
   setTimeout(() => overlay.remove(), 650);
 
-  // 3. Now it's safe to start the mic
+  // 3. Build voice input (auto-selects Whisper or browser STT)
+  voiceInput = await buildVoiceInput();
+
+  // 4. Now it's safe to start the mic
   voiceInput.start();
   transition("listening");
 
-  // 4. Start in ambient mode — dashboard is shown only on demand
+  // 5. Start in ambient mode — dashboard is shown only on demand
   setMode("ambient");
 }
 
@@ -289,10 +324,10 @@ btnMute.addEventListener("click", (e) => {
   isMuted = !isMuted;
   btnMute.classList.toggle("muted", isMuted);
   if (isMuted) {
-    voiceInput.pause();
+    voiceInput?.pause();
     transition("idle");
   } else {
-    voiceInput.resume();
+    voiceInput?.resume();
     transition("listening");
   }
 });
