@@ -34,7 +34,7 @@ from typing import Optional
 
 import anthropic
 import httpx
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -2385,6 +2385,16 @@ async def lifespan(application: FastAPI):
     # Start context refresh in a separate thread (never touches event loop)
     _refresh_context_sync()
     asyncio.create_task(_reminder_scheduler_loop())
+
+    # Preload Whisper model in background so first STT request is fast
+    try:
+        import whisper_stt
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, whisper_stt.preload)
+        log.info("Whisper STT preload queued (model: %s)", whisper_stt.MODEL_SIZE)
+    except Exception as _wh_err:
+        log.info("Whisper STT not available: %s", _wh_err)
+
     log.info("JARVIS server starting")
 
     yield
@@ -4733,6 +4743,33 @@ async def dashboard_calendar():
     except Exception as e:
         log.warning("dashboard_calendar error: %s", e)
         return {'events': [], 'error': str(e)}
+
+# ---------------------------------------------------------------------------
+# Sprint 18: Whisper STT endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/stt/status")
+async def stt_status():
+    """Let the frontend know if server-side Whisper STT is available."""
+    try:
+        import whisper_stt
+        return {"available": whisper_stt.is_available(), "model": whisper_stt.MODEL_SIZE}
+    except Exception:
+        return {"available": False, "model": None}
+
+@app.post("/api/stt/transcribe")
+async def stt_transcribe(audio: UploadFile = File(...)):
+    """Receive a raw audio blob (webm/opus from MediaRecorder) and return transcript."""
+    try:
+        import whisper_stt
+        data = await audio.read()
+        ct = audio.content_type or ""
+        suffix = ".wav" if "wav" in ct else ".webm"
+        text = await whisper_stt.transcribe_async(data, suffix=suffix)
+        return {"text": text}
+    except Exception as e:
+        log.warning("stt_transcribe error: %s", e)
+        return {"text": "", "error": str(e)}
 
 # Static file serving (frontend)
 # ---------------------------------------------------------------------------
