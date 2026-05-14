@@ -8,36 +8,43 @@ especially useful when switching between machines (home ↔ work laptop).
 
 ## What this project is
 
-A voice-activated AI assistant running on WSL/Windows. The user speaks → browser
-captures audio via Web Speech API → WebSocket → FastAPI backend → Anthropic Claude
-for reasoning → Fish Audio for TTS → MP3 streamed back to browser. Falls back to
-browser-native window.speechSynthesis if Fish Audio fails.
+A voice-activated AI assistant running on WSL/Windows. The user speaks → audio
+captured via server-side faster-whisper ASR (Sprint 18) or browser Web Speech API
+fallback → WebSocket → FastAPI backend → Anthropic Claude for reasoning → Fish Audio
+for TTS → MP3 streamed back to browser. Falls back to browser-native
+window.speechSynthesis if Fish Audio fails.
 
-Current sprint: **Sprint 14 complete** (Project Management Intelligence).
+Current sprint: **Sprint 18 complete** (Server-side Whisper ASR).
 
 ---
 
 ## Architecture
 
 Browser (Vite + TypeScript)
-  Web Speech API (STT)
+  whisperVoice.ts — MediaRecorder + VAD → POST /api/stt/transcribe (Sprint 18)
+  voice.ts        — Web Speech API fallback (auto-selected if Whisper unavailable)
   AudioContext (MP3 playback)
   window.speechSynthesis (TTS fallback)
-  WebSocket -> FastAPI server (server.py)
+  contextMode.ts  — UI mode machine: ambient / dashboard / context (Sprint 16)
+  WebSocket → FastAPI server (server.py)
                         |
                         +- Anthropic API (claude-haiku fast, claude-sonnet complex)
                         +- Fish Audio API (TTS -> MP3 bytes -> base64)
-                        +- platform_adapter.py  (all WSL/Windows OS ops)
-                        +- actions.py           (high-level action helpers)
-                        +- mail_gmail.py        (Gmail read via OAuth)
-                        +- calendar_google.py   (Google Calendar read+write via OAuth)
-                        +- briefing.py          (morning briefing + daily overview)
-                        +- search_web.py        (Brave Search API + freshness)
-                        +- obs_controller.py    (OBS Studio via WebSocket v5)
-                        +- stream_copilot.py    (multi-step OBS macro sequences)
+                        +- whisper_stt.py        (faster-whisper ASR, Sprint 18)
+                        +- platform_adapter.py   (all WSL/Windows OS ops)
+                        +- actions.py            (high-level action helpers)
+                        +- mail_gmail.py         (Gmail read via OAuth)
+                        +- calendar_google.py    (Google Calendar read+write via OAuth)
+                        +- briefing.py           (morning briefing + daily overview)
+                        +- search_web.py         (Brave Search API + freshness)
+                        +- obs_controller.py     (OBS Studio via WebSocket v5)
+                        +- stream_copilot.py     (multi-step OBS macro sequences)
                         +- spotify_controller.py (Spotify Web API via spotipy)
-                        +- conversation_db.py   (SQLite conversation history)
-                        +- reminders.py         (SQLite reminders + scheduler)
+                        +- budget_reader.py      (local Excel budget parsing)
+                        +- budget_analyzer.py    (debt totals, payoff strategy)
+                        +- project_manager.py    (SQLite project + blocker tracking)
+                        +- conversation_db.py    (SQLite conversation history)
+                        +- reminders.py          (SQLite reminders + scheduler)
 
 ---
 
@@ -46,6 +53,7 @@ Browser (Vite + TypeScript)
 | File | Purpose |
 |------|---------|
 | server.py | Main FastAPI app, WebSocket handler, all action executors, system prompt, scheduler |
+| whisper_stt.py | faster-whisper wrapper: preload(), transcribe_bytes(), transcribe_async() |
 | platform_adapter.py | All WSL/Windows OS calls: launch apps, open URLs, screenshot, clipboard, notifications |
 | actions.py | Higher-level helpers (open_app, open_browser, open_terminal) |
 | conversation_db.py | SQLite conversation persistence (~/.jarvis/conversations.db) |
@@ -57,13 +65,60 @@ Browser (Vite + TypeScript)
 | obs_controller.py | OBS Studio WebSocket v5 control (scenes, streaming, recording, mic) |
 | stream_copilot.py | High-level OBS macros: stream_prep, go_live, brb_mode, panic_mode, end_stream |
 | spotify_controller.py | Spotify Web API via spotipy: play/pause/skip/volume/search/queue |
+| budget_reader.py | Loads Juan_Financial_Dashboard.xlsx; parses Debts, Snapshot, Calendar sheets |
+| budget_analyzer.py | Debt totals, avalanche/snowball payoff strategy, voice-friendly output |
+| project_manager.py | SQLite project tracking: add, log, blockers, standup, focus, weekly digest |
 | screen.py | Screenshot routing (WSL -> platform_adapter, macOS -> native) |
 | dispatch_registry.py | Tracks background Claude Code build tasks |
 | work_mode.py | Work session management (claude -p subprocess) |
-| frontend/src/main.ts | WebSocket client, state machine, audio playback, browser TTS fallback |
-| frontend/src/voice.ts | AudioContext queue player |
+| frontend/src/main.ts | WebSocket client, state machine, audio playback, Whisper/browser STT auto-select |
+| frontend/src/voice.ts | Web Speech API voice input + AudioContext queue player |
+| frontend/src/whisperVoice.ts | Whisper voice input: MediaRecorder + VAD + HTTP POST (Sprint 18) |
+| frontend/src/contextMode.ts | UI mode state machine: ambient/dashboard/context, 15s auto-dismiss |
+| frontend/src/components/CalendarWidget.ts | Calendar widget polling /api/dashboard/calendar |
 | frontend/src/settings.ts | Settings panel (preferences API) |
 | verify_jarvis.sh | Full smoke test -- always run after a pull or before pushing |
+
+---
+
+## Whisper ASR (Sprint 18)
+
+### Backend — whisper_stt.py
+Uses faster-whisper (CTranslate2-based, runs on CPU).
+
+```python
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")   # tiny/base/small/medium
+preload()           # eager model load at server startup (called from lifespan)
+is_available()      # returns True if model loaded successfully
+transcribe_bytes(audio_bytes, suffix=".webm") -> str
+transcribe_async(audio_bytes, suffix=".webm") -> str  # executor wrapper
+```
+
+Options in transcribe_bytes(): beam_size=1, vad_filter=True, language="en"
+
+### Server endpoints
+- GET /api/stt/status → `{"available": true, "model": "tiny"}`
+- POST /api/stt/transcribe → multipart `audio` field → `{"text": "..."}`
+
+### Frontend — whisperVoice.ts
+- getUserMedia() once, reuses stream
+- AudioContext AnalyserNode polls every 40ms for RMS energy
+- RMS > 0.012 → speech start, MediaRecorder.start()
+- Silence > 700ms → stop recording → POST blob to /api/stt/transcribe
+- Min utterance: 200ms / Min blob: 1KB (noise rejection)
+- MIME preference: webm;codecs=opus → webm → ogg → mp4
+- Implements same VoiceInput interface as voice.ts (start/stop/pause/resume)
+
+### Auto-selection in main.ts
+activate() calls buildVoiceInput() which:
+1. Fetches /api/stt/status — if available: true → uses whisperVoice.ts
+2. On any error or available: false → falls back to browser Web Speech API
+
+### Install
+```bash
+pip3 install faster-whisper
+```
+Model downloads automatically on first preload() call (~75 MB for tiny).
 
 ---
 
@@ -127,10 +182,70 @@ Three dispatch paths:
 | SPOTIFY_VOLUME amount | Set Spotify volume (0-100) |
 | SPOTIFY_PLAY_QUERY query | Search and play artist/playlist/track |
 | SPOTIFY_QUEUE query | Add a track to the queue |
+| BUDGET_SUMMARY | Income, outflow, deficit, total debt, interest burned, DTI |
+| BUDGET_TOTAL_DEBT | Total with top-3 by balance + min payment total |
+| BUDGET_SHOW_DEBTS | All debts: name, balance, APR, minimum, status |
+| BUDGET_PAYOFF_PLAN | Avalanche (or snowball if no APR), top-5 targets |
+| BUDGET_HIGHEST_INTEREST | Highest APR debt, balance, monthly cost |
+| BUDGET_MONTHLY_DUE | Total minimums grouped by early/mid/late month |
+| PROJECT_ADD | Register new project |
+| PROJECT_STATUS | Full status: priority, last update, blockers |
+| PROJECT_LOG | Append timestamped update |
+| PROJECT_BLOCKER | Add open blocker |
+| PROJECT_RESOLVE_BLOCKER | Mark best-matching blocker resolved |
+| PROJECT_SET_STATUS | Change project status (done/paused/active) |
+| PROJECT_STANDUP | All active projects: last update + blockers |
+| PROJECT_FOCUS | AI recommendation of what to work on next |
+| PROJECT_WEEKLY | All updates logged in the past 7 days |
+| PROJECT_UNTOUCHED | Active projects not touched in last 5 days |
 
 **Fast-path safety rules (critical):**
 - STOP_STREAM and STOP_RECORDING: phrase must LEAD the sentence (no substring match)
 - SWITCH_SCENE: filters pronoun-only targets (it, that, this, there, etc.)
+
+---
+
+## Contextual UI System (Sprints 15–16)
+
+Three UI modes controlled by body class:
+- `mode-ambient` — orb only + pill indicator (default after activation)
+- `mode-dashboard` — full layout with all widgets visible
+- `mode-context` — floating panel triggered by voice keywords
+
+Voice triggers (contextMode.ts detectPanelTrigger):
+- "go live" / "start stream" / "obs" → OBS panel
+- "what's playing" / "spotify" / "skip track" → Spotify panel
+- "my debt" / "budget" / "my balance" → Budget panel
+- "work on" / "my projects" / "what should" → Projects panel
+- "check email" / "my email" / "inbox" → Email panel
+
+Auto-dismiss: 15s countdown bar (requestAnimationFrame). Click orb pill → dashboard.
+
+Dashboard widgets:
+- JarvisBrain (orb + voice state)
+- Calendar widget (polls /api/dashboard/calendar every 5 min)
+- Spotify widget
+- OBS widget
+- Projects widget
+
+---
+
+## Orb visualization (Sprints 15, 17)
+
+frontend/src/orb.ts — Three.js WebGL particle orb with CSS fallback.
+
+WebGL: alpha:true + setClearColor(0,0) for transparent canvas.
+Canvas constrained to 420px in dashboard mode (body.mode-dashboard #orb-canvas).
+Resize handler uses canvas.clientWidth/Height (not window size).
+
+States → colors:
+- idle     → dim blue  (#3a6a9a)
+- listening → bright blue (#4db8ff)
+- thinking  → purple (#a855f7)
+- speaking  → green (#22c55e)
+
+setState() adds body.orb-[state] class for CSS glow effects.
+CSS fallback: #orb-fallback div with radial gradient, activated if WebGL throws.
 
 ---
 
@@ -209,12 +324,6 @@ Freshness: _needs_freshness(query) checks for keywords like "today", "now",
 "price", "score", "weather", "latest", "current". If matched, adds freshness="pw"
 (past week) to the Brave API call to prioritize recent content.
 
-Haiku prompt instructs: "For prices, scores, or live data: always state the value
-AND note if the result may be delayed."
-
-Action: [ACTION:WEB_SEARCH] bitcoin price today
-Fast-path: "search for", "look up", "google", "what is the price of", "who won"
-
 ---
 
 ## OBS Studio integration (Sprint 10)
@@ -236,19 +345,10 @@ Env vars: OBS_HOST (auto-detected), OBS_PORT (4455), OBS_PASSWORD, OBS_MIC_INPUT
 ## Stream Copilot (Sprint 11)
 
 stream_copilot.py contains five async macro functions:
+  stream_prep(), go_live(), brb_mode(), panic_mode(), end_stream_safe()
 
-  stream_prep()     -- starting scene + unmute mic + start recording (no stream start)
-  go_live()         -- start stream + recording + 1.5s pause + switch to gameplay scene
-  brb_mode()        -- BRB scene + mute mic (STREAM_BRB_MUTES_MIC=true in .env)
-  panic_mode()      -- soft: safe scene + mute / hard: also stop stream (STREAM_PANIC_STOPS_STREAM)
-  end_stream_safe() -- ending scene + 2s pause + stop stream + stop recording
-
-_find_scene(env_key, *keywords):
-  1. Checks env var (e.g. STREAM_GAMEPLAY_SCENE) for exact scene name
-  2. Falls back to keyword scan of actual OBS scene list (case-insensitive)
-  Returns None if no match found -- action skips gracefully.
-
-_set_mic_muted(muted): explicit state (not toggle) using get_input_mute + set_input_mute.
+_find_scene(env_key, *keywords): checks env var first, falls back to keyword scan.
+_set_mic_muted(muted): explicit state (not toggle).
 
 Env vars for scene names:
   STREAM_STARTING_SCENE, STREAM_GAMEPLAY_SCENE, STREAM_BRB_SCENE,
@@ -259,62 +359,41 @@ Env vars for scene names:
 
 ## Spotify Control (Sprint 12)
 
-spotify_controller.py uses spotipy (pip install spotipy) + Spotify Web API.
-OAuth flow with WSGI callback server on 0.0.0.0 (WSL2-compatible).
-Token cached at token_spotify.json in project root.
-
+spotify_controller.py uses spotipy + Spotify Web API. OAuth cached at token_spotify.json.
 Required env vars: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
-  (redirect URI must be registered in your Spotify Developer app)
-
-Scopes: user-read-playback-state user-modify-playback-state user-read-currently-playing
 Requires Spotify Premium for playback control.
 
-Key functions:
-  get_status()           -- currently playing track + artist + volume
-  play(), pause()        -- resume / pause
-  skip(), previous()     -- next / previous track
-  set_volume(amount)     -- 0-100
-  play_query(query)      -- search and play (prefers playlists for playlist queries,
-                            artists for artist queries, else tracks)
-  queue_query(query)     -- add track to queue
+---
 
-_MOOD_MAP maps natural phrases to search queries:
-  "something chill" -> "chill vibes playlist"
-  "focus music" -> "deep focus music playlist"
-  etc.
+## Budget Assistant (Sprint 13)
 
-_active_device_id(sp): returns active device, falls back to first available device.
+Reads Juan_Financial_Dashboard.xlsx from a local OneDrive folder.
+Files: budget_reader.py (openpyxl parser), budget_analyzer.py (calculations).
+Budget file: /mnt/c/Users/jbsan/OneDrive/Documents/Payoff debts/Payoff debts/
+Override location: BUDGET_FOLDER in .env
+Sheets used: Debts (11 debts, APR, balance, min), Snapshot (income/expenses), Calendar (due dates).
 
-Setup steps:
-  1. Create app at developer.spotify.com
-  2. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env
-  3. Set SPOTIFY_REDIRECT_URI=http://localhost:8888/callback (register this in the app)
-  4. Run JARVIS and say "play some music" -- browser will open for OAuth consent
-  5. After auth, token is cached; subsequent requests work without browser
+---
+
+## Project Management (Sprint 14)
+
+project_manager.py manages ~/.jarvis/projects.db (SQLite, no external deps).
+4-tier fuzzy name matching. 10 actions (see action table above).
+PROJECT_FOCUS uses claude-haiku to reason over priorities, blockers, and timestamps.
+Morning briefing appends a project snapshot if any active projects exist.
 
 ---
 
 ## Reminder system (Sprint 8)
 
 reminders.py manages time-based reminders in ~/.jarvis/reminders.db.
-
-Time parsing supports: "in 10 minutes", "in 2 hours", "at 6 PM",
-"at 3:30 PM", "tomorrow at 9 AM". Returns None if unparseable.
-
-Scheduler: _reminder_scheduler_loop() runs as asyncio.create_task at server boot.
-Polls every 30 seconds. When a reminder fires:
-  1. Marks it done immediately (prevents double-firing).
-  2. Calls platform_adapter.notify_windows() -- visible even if browser closed.
-  3. Speaks via TTS on all active WebSocket connections.
-
-LLM action format: [ACTION:SET_REMINDER] in 10 minutes ||| stretch
+Scheduler polls every 30s. Fires: notify_windows() + TTS on all active WS connections.
 
 ---
 
 ## Gmail integration (Sprint 7)
 
 mail_gmail.py reads Gmail via OAuth. Token at ~/.jarvis/gmail_token.json.
-First run opens browser for OAuth consent.
 Actions: READ_MAIL (list recent), SUMMARIZE_MAIL (AI summary of inbox)
 
 ---
@@ -322,16 +401,7 @@ Actions: READ_MAIL (list recent), SUMMARIZE_MAIL (AI summary of inbox)
 ## Conversation persistence
 
 conversation_db.py stores every turn in ~/.jarvis/conversations.db (SQLite).
-On WebSocket connect, last 20 messages loaded into history[] so JARVIS remembers
-context across server restarts. DB pruned to 200 rows max.
-
----
-
-## Work mode
-
-"Start work mode" launches a claude -p subprocess (WorkSession). Subsequent
-speech routes there as a coding assistant. Stop phrases like "stop work mode",
-"end work session" return to normal voice mode.
+Last 20 messages loaded on WS connect. DB pruned to 200 rows max.
 
 ---
 
@@ -339,10 +409,9 @@ speech routes there as a coding assistant. Stop phrases like "stop work mode",
 
 idle -> listening -> thinking -> speaking -> idle
 
-- status:idle from server is IGNORED while in speaking state (prevents race
-  where server finishes before audio playback completes).
+- status:idle from server is IGNORED while in speaking state.
 - speakingWatchdog: 30s timeout forces idle if stuck in speaking state.
-- {type:"text"} triggers browser TTS fallback (Fish Audio failure path).
+- {type:"text"} triggers browser TTS fallback.
 - {type:"audio"} with valid base64 MP3 cancels browser TTS and plays Fish Audio.
 
 ---
@@ -355,6 +424,9 @@ FISH_API_KEY=
 FISH_VOICE_ID=612b878b113047d9a770c069c8b4fdfe
 USER_LOCATION=San Juan, Puerto Rico
 DEV_MODE=1
+
+# Whisper ASR (Sprint 18)
+WHISPER_MODEL=tiny        # tiny / base / small / medium
 
 # OBS WebSocket
 OBS_PORT=4455
@@ -377,9 +449,10 @@ BRAVE_SEARCH_API_KEY=
 SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
-```
 
-DEV_MODE=1 disables SSL (required for Vite proxy in dev). Do NOT set in production.
+# Budget
+BUDGET_FOLDER=/mnt/c/Users/jbsan/OneDrive/Documents/Payoff debts/Payoff debts/
+```
 
 ---
 
@@ -388,6 +461,7 @@ DEV_MODE=1 disables SSL (required for Vite proxy in dev). Do NOT set in producti
 | Script | Purpose |
 |--------|---------|
 | verify_jarvis.sh | Full smoke test -- run after every pull or before pushing |
+| build_frontend.sh | Builds frontend via nvm-aware bash (use when npm run build fails from PowerShell) |
 | typecheck_frontend.sh | TypeScript type-check only |
 | setup_dev_env.sh | First-time setup on a new machine (npm install + import check) |
 
@@ -396,8 +470,11 @@ DEV_MODE=1 disables SSL (required for Vite proxy in dev). Do NOT set in producti
 # Terminal 1 -- backend
 cd ~/dev/jarvis/jarvis && DEV_MODE=1 python3 server.py
 
-# Terminal 2 -- frontend
+# Terminal 2 -- frontend (dev mode)
 cd ~/dev/jarvis/jarvis/frontend && npm run dev
+
+# Or build for production serving:
+bash build_frontend.sh
 
 # Browser
 open http://localhost:5173
@@ -423,125 +500,10 @@ open http://localhost:5173
 | 12 | Spotify voice control: play/pause/skip/volume/search/queue via Spotify Web API |
 | 13 | Budget Assistant: read local Excel financial dashboard, answer debt/payoff questions by voice |
 | 14 | Project Management Intelligence: track projects, log updates, blockers, standup, focus recommendation |
-
-
-
----
-
-## Project Management (Sprint 14)
-
-project_manager.py manages a local SQLite DB at ~/.jarvis/projects.db.
-No external dependencies. Schema designed for future export/sync.
-
-### Schema
-  projects         -- id, name, status (active/paused/done), priority (1/2/3), description, created_at, updated_at
-  project_updates  -- append-only log: id, project_id, note, created_at
-  project_blockers -- id, project_id, description, resolved (0/1), created_at, resolved_at
-
-### Fuzzy name matching (4 tiers)
-  1. Exact case-insensitive match
-  2. Starts-with match
-  3. Substring match
-  4. difflib close match (cutoff 0.55)
-  Fails clearly if multiple projects match at the same tier.
-
-### Actions
-| Action | Target format | What it does |
-|--------|--------------|-------------|
-| PROJECT_ADD | name [||| description ||| priority] | Register new project |
-| PROJECT_STATUS | project_name | Full status: priority, last update, blockers, update count |
-| PROJECT_LOG | project_name ||| note | Append timestamped update |
-| PROJECT_BLOCKER | project_name ||| reason | Add open blocker |
-| PROJECT_RESOLVE_BLOCKER | project_name [||| blocker_query] | Mark best-matching blocker resolved |
-| PROJECT_SET_STATUS | project_name ||| done/paused/active | Change project status |
-| PROJECT_STANDUP | (none) | All active projects: last update + blockers, grouped by priority |
-| PROJECT_FOCUS | (none) | Haiku-powered recommendation of what to work on next |
-| PROJECT_WEEKLY | (none) | All updates logged in the past 7 days, grouped by project |
-| PROJECT_UNTOUCHED | (none) | Active projects not touched in last 5 days |
-
-### Focus recommendation (PROJECT_FOCUS)
-Uses claude-haiku to reason over:
-  - All active project names, priorities, last update timestamps
-  - Open blockers (blocked projects are skipped unless unblocking is the priority)
-  - Current time of day
-Returns a decisive 2-3 sentence spoken recommendation.
-
-### Morning briefing integration
-build_morning_briefing() appends get_projects_snapshot() to its output
-if any active projects exist. Snapshot is one line: "N active projects,
-M blocked — top priority: ProjectName."
-
-### Fast-path voice triggers (no LLM round-trip)
-  "add project X" / "start tracking X"     → PROJECT_ADD
-  "status of X" / "how is project X"        → PROJECT_STATUS
-  "log update on X: note"                   → PROJECT_LOG
-  "X is blocked on reason"                  → PROJECT_BLOCKER
-  "mark X as done/paused/active"            → PROJECT_SET_STATUS
-  "project standup" / "how are my projects" → PROJECT_STANDUP
-  "what should I work on next"              → PROJECT_FOCUS
-  "what did I accomplish this week"         → PROJECT_WEEKLY
-  "what projects haven't I touched"         → PROJECT_UNTOUCHED
-
-### Priority values
-  1 = high (urgent/critical/important)
-  2 = medium (default)
-  3 = low (someday)
-  Specified by word when adding: "add project X high priority"
-
----
-
-## Budget Assistant (Sprint 13)
-
-Reads Juan_Financial_Dashboard.xlsx from a local OneDrive folder and answers
-debt/budget questions by voice. Never hallucinates financial data — if the file
-is missing or a column is absent, JARVIS says so clearly.
-
-### Files
-- budget_reader.py  — loads openpyxl, parses Debts / Snapshot / Calendar sheets
-- budget_analyzer.py — calculates totals, payoff strategy, produces voice-friendly text
-
-### Budget file location
-Default: /mnt/c/Users/jbsan/OneDrive/Documents/Payoff debts/Payoff debts/
-Override: set BUDGET_FOLDER in .env
-File parsed: Juan_Financial_Dashboard.xlsx
-
-### Sheets used
-- Debts: 11 debts with priority, balance, APR, min payment, status (avalanche-ordered)
-- Snapshot: monthly income, total expenses, net cash flow, total debt, debt-to-income
-- Calendar: payment due dates with category tags
-
-### Actions
-| Action | Function called | What it says |
-|--------|----------------|-------------|
-| BUDGET_SUMMARY | async_budget_summary() | Income, outflow, deficit, total debt, interest burned, DTI |
-| BUDGET_TOTAL_DEBT | async_total_debt() | Total with top-3 by balance + min payment total |
-| BUDGET_SHOW_DEBTS | async_show_debts() | All 11 debts: name, balance, APR, minimum, status |
-| BUDGET_PAYOFF_PLAN | async_payoff_plan() | Avalanche (or snowball if no APR), top-5 targets + special flags |
-| BUDGET_HIGHEST_INTEREST | async_highest_interest() | Highest APR debt, balance, monthly cost |
-| BUDGET_MONTHLY_DUE | async_monthly_due() | Total minimums grouped by early/mid/late month |
-
-### Payoff strategy logic
-- If any debts have APR data: use avalanche (highest APR first)
-- If no APR data: use snowball (smallest balance first)
-- Always flag: 0% APR debts (kill immediately), past-due debts (catch up first)
-- Explains which method was used and why
-
-### Fast-path phrases (no LLM needed)
-- "total debt", "how much do I owe" -> BUDGET_TOTAL_DEBT
-- "show my debts", "list my debts" -> BUDGET_SHOW_DEBTS
-- "payoff plan", "debt strategy" -> BUDGET_PAYOFF_PLAN
-- "highest interest", "highest APR" -> BUDGET_HIGHEST_INTEREST
-- "monthly payments", "what is due this month" -> BUDGET_MONTHLY_DUE
-- "budget summary", "financial summary" -> BUDGET_SUMMARY
-
-### Dependencies
-- openpyxl>=3.1.0 (added to requirements.txt)
-- No OAuth, no external APIs -- pure local file access via WSL /mnt/c/ path
-
-### Common issues
-- "Budget file not found": check BUDGET_FOLDER in .env points to the .xlsx location
-- openpyxl missing: pip3 install openpyxl --break-system-packages
-- Stale data: JARVIS re-reads the file on every request (no caching)
+| 15 | Frontend dashboard UI: Three.js orb, widget layout, dashboard/ambient CSS modes |
+| 16 | Contextual UI System: ambient/dashboard/context modes, voice-triggered panels, 15s auto-dismiss |
+| 17 | Orb fix (transparent WebGL canvas, CSS fallback), calendar widget, orb visibility in dashboard mode |
+| 18 | Server-side Whisper ASR: faster-whisper backend, MediaRecorder+VAD frontend, auto-selects over browser STT |
 
 ---
 
@@ -563,22 +525,21 @@ File parsed: Juan_Financial_Dashboard.xlsx
 **Spotify auth needed**: First time, say "play something" and complete OAuth in browser.
 
 **Brave Search returning stale prices/scores**: Ensure BRAVE_SEARCH_API_KEY is set (not
-  commented out) in .env. The key must NOT start with # .
+  commented out) in .env.
 
-**stop_stream false positive** (e.g. "best stop streaming service" triggered stop):
-  Fixed: stop_stream and stop_recording phrases must LEAD the sentence.
+**stop_stream false positive**: phrase must LEAD the sentence (no substring match).
 
-**switch_scene false positive** (e.g. "you switched to it" triggered scene switch):
-  Fixed: scene targets that are pronouns (it, that, this, there...) are filtered out.
+**switch_scene false positive**: pronoun targets (it, that, this, there) are filtered out.
 
-**Frontend stuck in speaking**: Server sends status:idle before audio finishes playing.
-  Fixed by ignoring server idle signals while currentState === "speaking".
-
-**TTS fallback stuck 30s**: {type:"text"} was not triggering audio, state never left speaking.
-  Fixed by wiring text messages to speakWithBrowserTts().
+**Frontend stuck in speaking**: Fixed by ignoring server idle signals while currentState === "speaking".
 
 **Multi-line git commits in PowerShell**: heredoc syntax is rejected.
   Workaround: write commit message to a temp file, use git commit -F.
+  OR use build_frontend.sh pattern (write script to WSL path, run via wsl bash /path/to/script.sh).
+
+**npm run build fails from PowerShell (UNC path error)**:
+  PowerShell passes the UNC path (\\wsl.localhost\...) to CMD.EXE which doesn't support it.
+  Fix: use build_frontend.sh written to the WSL path and run: wsl bash /home/jb/dev/jarvis/jarvis/build_frontend.sh
 
 **pip --break-system-packages**: WSL pip 22.x does not support this flag.
   Use plain pip3 install -r requirements.txt.
@@ -586,89 +547,39 @@ File parsed: Juan_Financial_Dashboard.xlsx
 **Vite proxy SSL error (EPROTO)**: Proxy target must be http:// not https://
   when backend runs with DEV_MODE=1. Already fixed in vite.config.ts.
 
-**WS audio dropped — "Object of type bytes is not JSON serializable"**:
-  Two send sites (line 3175 lookup-timeout fallback, line 3512 fix_self branch)
-  forgot to base64-encode Fish Audio bytes before send_json, while the other 25
-  audio sends already did. Symptom: WebSocket crashes mid-turn, UI freezes after
-  the first canned greeting. Fixed by wrapping audio in
-  base64.b64encode(audio).decode() to match the existing pattern.
+**Whisper model first-load slow**: tiny model (~75 MB) downloads on first preload() call.
+  Subsequent starts use the cached model. Use WHISPER_MODEL=tiny for fastest startup.
+
+**Whisper transcription quality poor**: Upgrade model size (base or small) via WHISPER_MODEL env var.
+  Tradeoff: larger model = better accuracy but more CPU and memory.
 
 **OBS log spam on machines without OBS configured**:
-  obs_controller._get_client() retried the connection on every dashboard poll
-  (~once per 8s) when OBS wasn't running. Added a 60s backoff after a failed
-  connect plus a "log once per cycle" gate (see _last_fail_ts and
-  _logged_unreachable). Voice command path is unchanged when OBS is up; on
-  OBS-less machines the log stays clean and reconnects are throttled. The cache
-  resets on a successful connect so OBS coming online mid-session is picked up.
+  Added 60s backoff after failed connect. See _last_fail_ts in obs_controller.py.
 
-**Diagnosing missing voice transcripts on a fresh machine**:
-  Speech recognition is browser-side (Web Speech API in voice.ts). If the
-  server log shows zero `User:` lines despite the user speaking, the browser
-  never sent the transcript. server.py voice_handler now emits one info-level
-  line for every incoming transcript message:
-  `WS rx transcript: text=… isFinal=…`. Use it to distinguish:
-    (a) no `WS rx transcript:` lines → browser not sending → check mic
-        permission / OS default input / DevTools console for "not-allowed";
-    (b) `isFinal=False` only → speech engine not finalizing utterances;
-    (c) `isFinal=True` lines but no follow-up `User:` → server-side filter
-        is dropping the message (apply_speech_corrections, etc.).
+**Web Speech API wedges silently (continuous mode)**:
+  Fixed with 12s heartbeat in voice.ts: forceRestart() if no activity detected.
+
+**Mic accuracy is per-machine (Web Speech API path)**:
+  Whisper ASR (Sprint 18) eliminates this issue entirely by running locally on server.
 
 **Frontend dist out of date when switching machines**:
-  FastAPI serves frontend/dist/ via StaticFiles (server.py:4736). After a
-  fresh git pull on a new PC, running `python3 server.py` will serve the
-  *committed* dist (or no dist at all). Always run `cd frontend && npm run
-  build` after pulling UI changes from another machine, otherwise the new
-  bundle hashes never appear in index.html and the browser keeps the old
-  cached bundle (visible in logs as `304 Not Modified` on the same hashed
-  filenames across sessions).
-
-**Web Speech API wedges silently after audio output (continuous mode)**:
-  Chrome's recognition session can stop emitting results after JARVIS
-  speaks or after a long idle period without firing onerror, leaving the
-  UI listening in name only. Fixed in voice.ts with a heartbeat: every 4s
-  we check Date.now() - lastActivityTs, and if >12s have passed while
-  shouldListen && !paused we call recognition.abort() then start() after
-  a 200ms settle. Verified on the work PC May 5: before the fix, ~1
-  transcript per 3 minutes; after the fix, transcripts arrived reliably.
-  Console-side ([voice] onstart / onend / no-speech / forceRestart) is
-  the source of truth — pair with the server's `WS rx transcript:` line
-  to see whether a problem is browser-side or server-side.
-
-**Mic accuracy is per-machine, not a code issue**:
-  Web Speech API quality varies wildly with hardware. The work PC may
-  capture but mistranscribe ("can you hear me" → "that's all my charges
-  but I didn't even have to keep") while the home setup transcribes
-  cleanly. This is the browser's STT, not JARVIS. Per-machine checks:
-    - Windows → Settings → System → Sound → Input → confirm right device
-      is default and meter spikes when speaking
-    - Levels: 80–100 with mic boost +20dB for laptop mics
-    - Background noise (fans, HVAC, music) wrecks Web Speech API recall
-    - Headset mic > built-in array mic in almost every case
-  Future option (real Sprint, not a 5-line fix): replace browser STT
-  with a server-side ASR (faster-whisper or whisper.cpp running locally
-  in WSL). Removes Chrome dependency, gives consistent accuracy across
-  machines, costs CPU and a bigger architectural change.
+  FastAPI serves frontend/dist/ via StaticFiles. Always run build_frontend.sh after pulling UI changes.
 
 ---
 
-## Session handoff — May 5, 2026
+## Session handoff — May 13, 2026
 
-Latest commits on origin/main:
-  8bf23e3  voice recognition resilience — heartbeat restart + diagnostics
-  455ddeb  voice WS bytes serialization + OBS connect backoff + diagnostics
+Latest commits on origin/main (Sprint 18 complete):
+  e6e0a8c  Sprint 18: Whisper ASR backend — whisper_stt.py + server.py endpoints
+  dccc625  Sprint 18: Whisper ASR frontend — whisperVoice.ts + main.ts auto-detection
 
-To pick up at the home machine:
+To pick up on any machine:
   git pull
-  cd frontend && npm run build
-  cd .. && python3 server.py
+  bash build_frontend.sh
+  DEV_MODE=1 python3 server.py
 
-What's known to work:
-  - Voice WS no longer crashes mid-turn on TTS reply
-  - OBS-less machines no longer spam "OBS not reachable"
-  - Recognition recovers from Web Speech API wedges via 12s heartbeat
-  - All three fixes verified on the work PC
-
-Open: work-PC mic mistranscribes (hardware/OS-level, see entry above).
-The home machine reportedly works well, so no code change required
-unless cross-machine accuracy becomes a recurring frustration — at
-which point: server-side Whisper ASR is the next move.
+Planned next sprints:
+  Sprint 19 — Email context panel: wire mail_gmail.fetch_recent_emails() into
+              /api/dashboard/email + fetchEmailPanel() in ContextPanels.ts
+  Sprint 20 — Deep Research agent: multi-hop Brave Search + Claude synthesis,
+              new DEEP_RESEARCH action
