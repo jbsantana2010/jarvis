@@ -3815,6 +3815,23 @@ async def voice_handler(ws: WebSocket):
                         elif _work_fast["action"] == "project_untouched":
                             response_text = "Checking neglected projects, sir."
                             asyncio.create_task(_execute_project_untouched(ws, history=history))
+                        # ── Sprint 21: Market Intelligence ──
+                        elif _work_fast["action"] == "stock_quote":
+                            asyncio.create_task(_execute_stock_quote(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "stock_analysis":
+                            asyncio.create_task(_execute_stock_analysis(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "stock_news":
+                            asyncio.create_task(_execute_stock_news(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "market_overview":
+                            asyncio.create_task(_execute_market_overview(ws, history=history))
+                        elif _work_fast["action"] in ("watchlist_scan", "trade_ideas"):
+                            asyncio.create_task(_execute_watchlist_scan(ws, history=history))
+                        elif _work_fast["action"] == "watchlist_add":
+                            asyncio.create_task(_execute_watchlist_add(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "watchlist_remove":
+                            asyncio.create_task(_execute_watchlist_remove(_work_fast.get("target", ""), ws, history=history))
+                        elif _work_fast["action"] == "watchlist_status":
+                            asyncio.create_task(_execute_watchlist_status(ws, history=history))
                     elif is_casual_question(user_text):
                         # Quick chat — bypass claude -p, use Haiku
                         response_text = await generate_response(

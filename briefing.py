@@ -12,6 +12,12 @@ Public API:
 
 from __future__ import annotations
 
+try:
+    import market_analyzer as _market_analyzer
+    _MARKET_AVAILABLE = True
+except ImportError:
+    _MARKET_AVAILABLE = False
+
 import asyncio
 import logging
 import os
@@ -178,17 +184,26 @@ async def build_morning_briefing(anthropic_client=None) -> str:
     greeting = f"{_time_greeting()}, {USER_NAME}. Today is {_date_str()}."
     body_parts = [p for p in [cal_text, rem_text, mail_text] if p]
 
-    if not body_parts:
+    # Sprint 21: append market brief if watchlist has tickers
+    market_text = ""
+    if _MARKET_AVAILABLE:
+        try:
+            market_text = await _market_analyzer.build_market_brief()
+        except Exception as _me:
+            log.debug(f"market brief skipped: {_me}")
+
+    if not body_parts and not market_text:
         raw = f"{greeting} Your schedule and inbox are both clear."
     else:
-        raw = " ".join([greeting] + body_parts)
+        all_parts = [p for p in [cal_text, rem_text, mail_text, market_text] if p]
+        raw = " ".join([greeting] + all_parts)
 
     if anthropic_client:
         raw = await _haiku_polish(
             raw,
-            "Rewrite this daily briefing to sound natural and useful in 4-6 sentences.",
+            "Rewrite this daily briefing to sound natural and useful in 4-6 sentences. Keep the market section concise.",
             anthropic_client,
-            max_tokens=250,
+            max_tokens=280,
         )
     return raw
 
