@@ -1,6 +1,8 @@
 /**
  * ContextPanels.ts — async data fetchers for Sprint 16 context overlay panels.
  * Each function fetches from a dashboard API endpoint and returns rendered HTML.
+ *
+ * Sprint 19: fetchEmailPanel() added — replaces "coming soon" stub.
  */
 
 function fmtMs(ms: number): string {
@@ -99,4 +101,57 @@ export async function fetchBudgetPanel(): Promise<string> {
   } catch {
     return `<div class="ctx-loading">Budget data unavailable.</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 19: Email panel
+// ---------------------------------------------------------------------------
+
+export async function fetchEmailPanel(): Promise<string> {
+  try {
+    const r = await fetch("/api/dashboard/email");
+    if (!r.ok) throw new Error("non-ok");
+    const d = await r.json();
+
+    if (d.error && (!d.emails || d.emails.length === 0)) {
+      return `<div class="ctx-loading">Gmail unavailable — check OAuth setup.</div>`;
+    }
+
+    const emails: any[] = d.emails || [];
+    if (emails.length === 0) {
+      return `<div class="ctx-loading">Inbox is clear.</div>`;
+    }
+
+    const unreadCount = emails.filter((e: any) => e.unread).length;
+    const header = unreadCount > 0
+      ? `<div class="ctx-email-header">${unreadCount} unread of ${emails.length}</div>`
+      : `<div class="ctx-email-header">${emails.length} recent — all read</div>`;
+
+    const rows = emails.slice(0, 6).map((e: any) => {
+      const unreadClass = e.unread ? " ctx-email-unread" : "";
+      const dot = e.unread ? `<span class="ctx-email-dot">●</span>` : `<span class="ctx-email-dot ctx-email-dot-read">○</span>`;
+      const sender  = _esc(e.sender  || "Unknown");
+      const subject = _esc(e.subject || "(no subject)");
+      const snippet = _esc((e.snippet || "").slice(0, 72));
+      const time    = _esc(e.timestamp || "");
+      return `
+        <div class="ctx-email-row${unreadClass}">
+          <div class="ctx-email-top">
+            ${dot}
+            <span class="ctx-email-sender">${sender}</span>
+            <span class="ctx-email-time">${time}</span>
+          </div>
+          <div class="ctx-email-subject">${subject}</div>
+          ${snippet ? `<div class="ctx-email-snippet">${snippet}…</div>` : ""}
+        </div>`;
+    }).join("");
+
+    return header + rows;
+  } catch {
+    return `<div class="ctx-loading">Email unavailable — is Gmail connected?</div>`;
+  }
+}
+
+function _esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

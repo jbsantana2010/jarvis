@@ -1,4 +1,4 @@
-import { fetchOBSPanel, fetchSpotifyPanel, fetchProjectsPanel, fetchBudgetPanel } from "./components/ContextPanels";
+import { fetchOBSPanel, fetchSpotifyPanel, fetchProjectsPanel, fetchBudgetPanel, fetchEmailPanel } from "./components/ContextPanels";
 
 export type UIMode = "ambient" | "dashboard" | "context";
 export type ActivePanel = "obs" | "spotify" | "budget" | "projects" | "email" | null;
@@ -72,7 +72,7 @@ export async function showContextPanel(panel: ActivePanel): Promise<void> {
     case "spotify":  html = await fetchSpotifyPanel(); break;
     case "budget":   html = await fetchBudgetPanel(); break;
     case "projects": html = await fetchProjectsPanel(); break;
-    case "email":    html = `<div class="ctx-loading">Email integration coming soon.</div>`; break;
+    case "email":    html = await fetchEmailPanel(); break;
     default:         html = `<div class="ctx-loading">—</div>`;
   }
 

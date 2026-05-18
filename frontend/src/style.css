@@ -910,3 +910,65 @@ body.mode-ambient #orb-canvas {
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cal-location { font-size: 10px; color: #5D6B86; margin-top: 2px;
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Sprint 19: Email context panel styles ─────────────────────────────── */
+
+.ctx-email-header {
+  font-size: 10px;
+  color: #4DB8FF;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #1A2436;
+}
+
+.ctx-email-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 0;
+  border-bottom: 1px solid #111C2D;
+}
+.ctx-email-row:last-child { border-bottom: none; }
+.ctx-email-row.ctx-email-unread { border-left: 2px solid rgba(77,184,255,0.5); padding-left: 8px; }
+
+.ctx-email-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctx-email-dot       { font-size: 8px; color: #4DB8FF; flex-shrink: 0; }
+.ctx-email-dot-read  { color: #2A3650; }
+
+.ctx-email-sender {
+  flex: 1;
+  font-size: 11px;
+  color: #EAF2FF;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-email-time {
+  font-size: 9px;
+  color: #3A5070;
+  font-family: 'JetBrains Mono','Consolas',monospace;
+  flex-shrink: 0;
+}
+.ctx-email-subject {
+  font-size: 11px;
+  color: #8BA5C8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-email-unread .ctx-email-subject { color: #C8D8EE; }
+
+.ctx-email-snippet {
+  font-size: 10px;
+  color: #3A5070;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

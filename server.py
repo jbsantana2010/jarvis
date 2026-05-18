@@ -4762,6 +4762,48 @@ async def dashboard_calendar():
         return {'events': [], 'error': str(e)}
 
 # ---------------------------------------------------------------------------
+# Sprint 21: Market Intelligence endpoint
+# ---------------------------------------------------------------------------
+
+@app.get('/api/dashboard/market')
+async def dashboard_market():
+    """Sprint 21: Market overview + watchlist summary for dashboard."""
+    try:
+        overview = stock_market.get_market_overview()
+        watchlist = stock_market.get_watchlist_summary()
+        return {"overview": overview, "watchlist": watchlist}
+    except Exception as e:
+        log.warning(f"dashboard_market error: {e}")
+        return {"overview": {}, "watchlist": []}
+
+
+# ---------------------------------------------------------------------------
+# Sprint 19: Email context panel endpoint
+# ---------------------------------------------------------------------------
+
+@app.get('/api/dashboard/email')
+async def dashboard_email():
+    """Sprint 19: Recent inbox emails for the email context panel."""
+    try:
+        emails = await mail_gmail.fetch_recent_emails(max_results=8)
+        return {
+            "emails": [
+                {
+                    "sender":    e.sender,
+                    "subject":   e.subject,
+                    "snippet":   e.snippet,
+                    "timestamp": e.timestamp,
+                    "unread":    e.unread,
+                }
+                for e in emails
+            ]
+        }
+    except Exception as e:
+        log.warning(f"dashboard_email error: {e}")
+        return {"emails": [], "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Sprint 18: Whisper STT endpoints
 # ---------------------------------------------------------------------------
 
